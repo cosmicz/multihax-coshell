@@ -49,6 +49,12 @@ export const INTENT_NAMES = [
   "set_shields",
   "set_beam_frequency",
   "set_auto_repair",
+  "combat_boost",
+  "combat_strafe",
+  "unload_tube",
+  "set_shield_frequency",
+  "set_beam_system_target",
+  "fire_tube_heading",
 ] as const;
 export type IntentName = (typeof INTENT_NAMES)[number];
 
@@ -69,6 +75,12 @@ export const INTENT_ROLE: Readonly<Record<IntentName, SeatRole>> = {
   set_shields: "weapons",
   set_beam_frequency: "weapons",
   set_auto_repair: "engineering",
+  combat_boost: "helms",
+  combat_strafe: "helms",
+  unload_tube: "weapons",
+  set_shield_frequency: "weapons",
+  set_beam_system_target: "weapons",
+  fire_tube_heading: "weapons",
 };
 
 export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
@@ -101,7 +113,13 @@ export type ValidatedIntent =
   | { intent: "fire_tube"; tube: number; callsign: string }
   | { intent: "set_shields"; active: boolean }
   | { intent: "set_beam_frequency"; frequency: number }
-  | { intent: "set_auto_repair"; enabled: boolean };
+  | { intent: "set_auto_repair"; enabled: boolean }
+  | { intent: "combat_boost"; amount: number }
+  | { intent: "combat_strafe"; amount: number }
+  | { intent: "unload_tube"; tube: number }
+  | { intent: "set_shield_frequency"; frequency: number }
+  | { intent: "set_beam_system_target"; system: SystemName }
+  | { intent: "fire_tube_heading"; tube: number; target_rotation_degrees: number };
 
 export type Classification =
   | { ok: true; intent: IntentName }
@@ -225,6 +243,64 @@ export function validateIntentArgs(
         return { ok: false, code: "OUT_OF_RANGE" };
       }
       return { ok: true, intent: { intent, enabled } };
+    }
+    case "combat_boost": {
+      const amount = args.amount;
+      if (!isClosedRange(amount, 0, 1)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, amount } };
+    }
+    case "combat_strafe": {
+      const amount = args.amount;
+      if (!isClosedRange(amount, -1, 1)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, amount } };
+    }
+    case "unload_tube": {
+      const tube = args.tube;
+      if (!isTubeIndex(tube)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, tube } };
+    }
+    case "set_shield_frequency": {
+      const frequency = args.frequency;
+      if (!Number.isInteger(frequency)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      if (
+        (frequency as number) < BEAM_FREQUENCY_MIN ||
+        (frequency as number) > BEAM_FREQUENCY_MAX
+      ) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return {
+        ok: true,
+        intent: { intent, frequency: frequency as number },
+      };
+    }
+    case "set_beam_system_target": {
+      const system = args.system;
+      if (!isSystemName(system)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, system } };
+    }
+    case "fire_tube_heading": {
+      const tube = args.tube;
+      const heading = args.heading_degrees;
+      if (!isTubeIndex(tube)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      if (!isFiniteNumber(heading) || heading < 0 || heading >= 360) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return {
+        ok: true,
+        intent: { intent, tube, target_rotation_degrees: heading - 90 },
+      };
     }
     case "set_beam_frequency": {
       const frequency = args.frequency;

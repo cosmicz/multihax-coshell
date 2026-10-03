@@ -526,6 +526,16 @@ const INTENT_EXAMPLES: ReadonlyArray<{
   { intent: "set_shields", role: "weapons", args: { active: true } },
   { intent: "set_beam_frequency", role: "weapons", args: { frequency: 10 } },
   { intent: "set_auto_repair", role: "engineering", args: { enabled: true } },
+  { intent: "combat_boost", role: "helms", args: { amount: 0.5 } },
+  { intent: "combat_strafe", role: "helms", args: { amount: -0.5 } },
+  { intent: "unload_tube", role: "weapons", args: { tube: 0 } },
+  { intent: "set_shield_frequency", role: "weapons", args: { frequency: 10 } },
+  { intent: "set_beam_system_target", role: "weapons", args: { system: "reactor" } },
+  {
+    intent: "fire_tube_heading",
+    role: "weapons",
+    args: { tube: 0, heading_degrees: 90 },
+  },
 ];
 
 export function printScripts(callsign: string, enemyCallsign: string): string {

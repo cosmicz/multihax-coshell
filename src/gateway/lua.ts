@@ -117,6 +117,18 @@ function commandLine(intent: ValidatedIntent): string {
       return `s:commandSetShields(${intent.active ? "true" : "false"})`;
     case "set_auto_repair":
       return `s:commandSetAutoRepair(${intent.enabled ? "true" : "false"})`;
+    case "combat_boost":
+      return `s:commandCombatManeuverBoost(${formatNumber(intent.amount, 3)})`;
+    case "combat_strafe":
+      return `commandCombatManeuverStrafe(s, ${formatNumber(intent.amount, 3)})`;
+    case "unload_tube":
+      return `s:commandUnloadTube(${formatTubeIndex(intent.tube)})`;
+    case "set_shield_frequency":
+      return `s:commandSetShieldFrequency(${formatTubeIndex(intent.frequency)})`;
+    case "set_beam_system_target":
+      return `commandSetBeamSystemTarget(s, ${luaString(intent.system)})`;
+    case "fire_tube_heading":
+      return `commandFireTube(s, ${formatTubeIndex(intent.tube)}, ${formatNumber(intent.target_rotation_degrees, 2)})`;
     case "set_beam_frequency":
       return `s:commandSetBeamFrequency(${formatTubeIndex(intent.frequency)})`;
   }
