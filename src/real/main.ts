@@ -467,9 +467,9 @@ const PAGE_SCRIPT = [
   "  rows.sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });",
   "  commandsBody.textContent = '';",
   "  rows.slice(0, 80).forEach(function (d) {",
-  "    var status = d.outcome === 'accepted' ? 'EXECUTED' : d.outcome === 'refused' ? 'REFUSED' : 'FAILED (' + d.outcome + ')';",
+  "    var status = d.outcome === 'accepted' ? 'ACCEPTED (API receipt)' : d.outcome === 'refused' ? 'REFUSED' : 'FAILED (' + d.outcome + ')';",
   "    var cls = d.outcome === 'accepted' ? 'accepted' : d.outcome === 'refused' ? 'refused' : 'failed';",
-  "    var receipt = (d.result ? JSON.stringify(d.result) : '') + (d.note ? ' ' + d.note : '');",
+  "    var receipt = d.result ? JSON.stringify(d.result) : '';",
   "    var tr = document.createElement('tr');",
   "    cell(tr, String(d.at).slice(11, 19), 'at');",
   "    cell(tr, state.ship);",
@@ -533,7 +533,7 @@ export function renderSpectatorPage(state: DriveState): string {
     "<table><thead><tr><th>system</th><th>power</th><th>coolant</th><th>health</th><th>heat</th></tr></thead>",
     '<tbody id="systems-body"></tbody></table>',
     "</section>",
-    '<section aria-labelledby="commands-heading"><h2 id="commands-heading">Executed command log (newest first; REFUSED = not executed)</h2>',
+    '<section aria-labelledby="commands-heading"><h2 id="commands-heading">Crew command log (newest first; ACCEPTED = API receipt, not proof of game effect; REFUSED = not executed)</h2>',
     '<div id="commands-wrap"><table><thead><tr><th>time UTC</th><th>ship</th><th>role</th><th>agent</th><th>intent</th><th>args</th><th>status</th><th>receipt</th></tr></thead>',
     '<tbody id="commands-body"></tbody></table></div>',
     "</section>",
@@ -553,6 +553,8 @@ function isSecretKey(key: string): boolean {
   return (SECRET_KEYS as readonly string[]).includes(key);
 }
 
+const PUBLIC_DROP_KEYS: ReadonlySet<string> = new Set(["note", "raw", "lua", "body"]);
+
 export function scrubSecrets(value: unknown, depth = 0): unknown {
   if (depth > 12) {
     return null;
@@ -563,7 +565,7 @@ export function scrubSecrets(value: unknown, depth = 0): unknown {
   if (typeof value === "object" && value !== null) {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (isSecretKey(key)) {
+      if (isSecretKey(key) || PUBLIC_DROP_KEYS.has(key)) {
         continue;
       }
       out[key] = scrubSecrets(entry, depth + 1);
