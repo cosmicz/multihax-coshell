@@ -6,7 +6,6 @@ import {
   DEFAULT_VMAPI_TIMEOUT_MS,
   DEFAULT_VMAPI_URL,
   FIXED_ACTOR_IDS,
-  MAX_INTENTS_PER_MINUTE,
   VmApiPort,
   isLoopbackHost,
   isLuaFieldKey,
