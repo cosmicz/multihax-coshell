@@ -569,14 +569,19 @@ async function bindShip(
     });
     if (attempt < options.bindRetries) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, Math.max(0, options.bindRetryMs));
-        if (typeof timer.unref === "function") timer.unref();
+        setTimeout(resolve, Math.max(0, options.bindRetryMs));
       });
     }
   }
-  throw new Error(
-    `no player ship observed after ${String(options.bindRetries)} attempts at ${port.endpoint}`,
-  );
+  const detail = `no player ship observed after ${String(options.bindRetries)} attempts at ${port.endpoint}`;
+  logLine({
+    at: new Date().toISOString(),
+    kind: "bind_gave_up",
+    attempts: options.bindRetries,
+    endpoint: port.endpoint,
+    detail,
+  });
+  throw new Error(detail);
 }
 
 export async function startVmApi(options: VmApiOptions): Promise<{ state: VmState; server: Server }> {
@@ -674,5 +679,9 @@ if (entry.endsWith("vmapi/server.ts") || entry.endsWith("vmapi/server.js")) {
       detail: error instanceof Error ? error.message : String(error),
     });
     process.exitCode = 1;
+    const flush = setTimeout(() => {
+      process.exit(1);
+    }, 250);
+    if (typeof flush.unref === "function") flush.unref();
   });
 }

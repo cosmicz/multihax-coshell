@@ -42,13 +42,13 @@ export function occupancyGuard(callsign: string, role: SeatRole): string[] {
 function commandLine(intent: ValidatedIntent): string {
   switch (intent.intent) {
     case "heading_degrees":
-      return `commandTargetRotation(${formatNumber(intent.target_rotation_degrees, 2)})`;
+      return `s:commandTargetRotation(${formatNumber(intent.target_rotation_degrees, 2)})`;
     case "impulse_fraction":
-      return `commandImpulse(${formatNumber(intent.impulse_fraction, 3)})`;
+      return `s:commandImpulse(${formatNumber(intent.impulse_fraction, 3)})`;
     case "system_power_request":
-      return `commandSetSystemPowerRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
+      return `s:commandSetSystemPowerRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
     case "system_coolant_request":
-      return `commandSetSystemCoolantRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
+      return `s:commandSetSystemCoolantRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
   }
 }
 

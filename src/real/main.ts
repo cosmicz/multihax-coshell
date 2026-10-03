@@ -8,6 +8,7 @@ import {
   FIXED_ACTOR_IDS,
   MAX_INTENTS_PER_MINUTE,
   VmApiPort,
+  isLoopbackHost,
   isLuaFieldKey,
   isVmCommandRole,
   resolveApiToken,
@@ -43,8 +44,25 @@ import type { Observation, ObservationResult } from "./observe.ts";
 
 export const DEFAULT_SPECTATOR_PORT = 3000;
 export const DEFAULT_SPECTATOR_HOST = "127.0.0.1";
+export const DEFAULT_PUBLIC_PORT = 3001;
+export const DEFAULT_PUBLIC_HOST = "0.0.0.0";
 export const MAX_BODY_BYTES = 8 * 1024;
 export const DEFAULT_LOG_LIMIT = 60;
+export const SECRET_KEYS = [
+  "token",
+  "api_token",
+  "apiToken",
+  "api_url",
+  "apiUrl",
+  "token_file",
+  "tokenFile",
+  "token_source",
+  "authorization",
+  "bearer",
+  "secret",
+  "password",
+  "passwd",
+] as const;
 export const TAGLINE =
   "Live EmptyEpsilon headless server; agents control helm and engineering";
 
@@ -55,6 +73,8 @@ export type DriveOptions = {
   apiTimeoutMs: number;
   spectatorHost: string;
   spectatorPort: number;
+  publicHost: string;
+  publicPort: number;
   tickMs: number;
   rateLimit: number;
   ruleControllers: SeatRole[] | null;
@@ -141,13 +161,21 @@ export function loadDriveOptions(): DriveOptions {
   const waypointX = optionalNumber("WAYPOINT_X");
   const waypointY = optionalNumber("WAYPOINT_Y");
   const secret = resolveApiToken(process.env);
+  const spectatorHost = strEnv("SPECTATOR_HOST", DEFAULT_SPECTATOR_HOST);
+  if (!isLoopbackHost(spectatorHost)) {
+    throw new TypeError(
+      `SPECTATOR_HOST ${spectatorHost} is refused: the listener that accepts POST /api/intent must stay on loopback`,
+    );
+  }
   return {
     apiUrl: strEnv("EE_API_URL", DEFAULT_VMAPI_URL),
     apiToken: secret.token,
     apiTokenSource: secret.from,
     apiTimeoutMs: numEnv("EE_API_TIMEOUT_MS", DEFAULT_VMAPI_TIMEOUT_MS),
-    spectatorHost: strEnv("SPECTATOR_HOST", DEFAULT_SPECTATOR_HOST),
+    spectatorHost,
     spectatorPort: numEnv("PORT", DEFAULT_SPECTATOR_PORT),
+    publicHost: strEnv("PUBLIC_HOST", DEFAULT_PUBLIC_HOST),
+    publicPort: numEnv("PUBLIC_PORT", DEFAULT_PUBLIC_PORT),
     tickMs: numEnv("TICK_MS", 2000),
     rateLimit: numEnv("RATE_LIMIT", MAX_INTENTS_PER_MINUTE),
     ruleControllers: parseRuleControllers(process.env["RULE_CONTROLLERS"]),
@@ -335,6 +363,7 @@ const PAGE_SCRIPT = [
   "  telemetry.appendChild(row('velocity', fixed(s.velocity.x, 2) + ', ' + fixed(s.velocity.y, 2)));",
   "  telemetry.appendChild(row('speed', fixed(s.speed, 2)));",
   "  telemetry.appendChild(row('impulse level', fixed(s.impulse_level, 2)));",
+  "  telemetry.appendChild(row('impulse request', fixed(s.impulse_request, 2)));",
   "  telemetry.appendChild(row('energy', fixed(s.energy_level, 1) + ' / ' + fixed(s.energy_max, 1)));",
   "  systemsBody.textContent = '';",
   "  ['reactor', 'impulse', 'maneuver'].forEach(function (name) {",
@@ -452,6 +481,43 @@ export function renderSpectatorPage(controllerLabel: string): string {
     "</body>",
     "</html>",
   ].join("\n");
+}
+
+function isSecretKey(key: string): boolean {
+  return (SECRET_KEYS as readonly string[]).includes(key);
+}
+
+export function scrubSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 12) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => scrubSecrets(entry, depth + 1));
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (isSecretKey(key)) {
+        continue;
+      }
+      out[key] = scrubSecrets(entry, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function publicStatePayload(state: DriveState): Record<string, unknown> {
+  const payload = statePayload(state) as Record<string, unknown>;
+  const vm = payload["vm"];
+  if (typeof vm === "object" && vm !== null) {
+    const copy = { ...(vm as Record<string, unknown>) };
+    delete copy["api_url"];
+    delete copy["token_source"];
+    delete copy["detail"];
+    payload["vm"] = copy;
+  }
+  return scrubSecrets(payload) as Record<string, unknown>;
 }
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
@@ -759,6 +825,36 @@ export function createSpectatorServer(state: DriveState): Server {
   });
 }
 
+export function createPublicServer(state: DriveState): Server {
+  return createHttpServer((request: IncomingMessage, response: ServerResponse) => {
+    const method = request.method ?? "GET";
+    let pathname = "/";
+    try {
+      pathname = new URL(request.url ?? "/", "http://public.invalid").pathname;
+    } catch {
+      sendJson(response, 400, { ok: false, error: "BAD_REQUEST" });
+      return;
+    }
+    if (method !== "GET") {
+      sendJson(response, 405, {
+        ok: false,
+        error: "METHOD_NOT_ALLOWED",
+        detail: "the public spectator is read-only; role agents use POST /api/intent on the loopback listener",
+      });
+      return;
+    }
+    if (pathname === "/") {
+      sendHtml(response, renderSpectatorPage(CONTROLLER_LABEL));
+      return;
+    }
+    if (pathname === "/state") {
+      sendJson(response, 200, publicStatePayload(state));
+      return;
+    }
+    sendJson(response, 404, { ok: false, error: "NOT_FOUND", detail: `no route for ${pathname}` });
+  });
+}
+
 function observationSnapshot(
   seq: number,
   at: number,
@@ -775,7 +871,10 @@ function observationSnapshot(
   };
 }
 
-export async function runDrive(options: DriveOptions): Promise<Server> {
+export async function runDrive(options: DriveOptions): Promise<{
+  spectator: Server;
+  publicViewer: Server;
+}> {
   const client = new VmApiPort({
     url: options.apiUrl,
     token: options.apiToken,
@@ -886,12 +985,35 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
   logLine({
     at: new Date().toISOString(),
     kind: "listening",
+    listener: "commands",
     url: `http://${options.spectatorHost}:${String(boundPort)}/`,
     vm_api: client.baseUrl,
     vm_token_source: options.apiTokenSource,
     ship: state.ship,
     epoch: state.epoch,
     controller_label: CONTROLLER_LABEL,
+  });
+
+  const publicServer = createPublicServer(state);
+  await new Promise<void>((resolve, reject) => {
+    publicServer.once("error", reject);
+    publicServer.listen(options.publicPort, options.publicHost, () => {
+      publicServer.removeListener("error", reject);
+      resolve();
+    });
+  });
+  const publicAddress = publicServer.address();
+  const publicBoundPort =
+    typeof publicAddress === "object" && publicAddress !== null
+      ? publicAddress.port
+      : options.publicPort;
+  logLine({
+    at: new Date().toISOString(),
+    kind: "listening",
+    listener: "public_read_only",
+    url: `http://${options.publicHost}:${String(publicBoundPort)}/`,
+    routes: ["/", "/state"],
+    ship: state.ship,
   });
 
   let running = false;
@@ -953,16 +1075,18 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
     if (typeof timer.unref === "function") timer.unref();
   };
   void runTick();
-  return server;
+  return { spectator: server, publicViewer: publicServer };
 }
 
 async function main(): Promise<void> {
   const options = loadDriveOptions();
-  const server = await runDrive(options);
+  const { spectator, publicViewer } = await runDrive(options);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      server.close(() => {
-        process.exit(0);
+      spectator.close(() => {
+        publicViewer.close(() => {
+          process.exit(0);
+        });
       });
     });
   }

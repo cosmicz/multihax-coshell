@@ -3,24 +3,31 @@ import type { EeExecResult, EeExecLuaPort } from "./eeport.ts";
 export const OBSERVATION_LUA = [
   "local s = getPlayerShip(-1)",
   'if s == nil then return toJSON({error="NO_PLAYER_SHIP"}) end',
-  "local pos = s:getPosition()",
-  "local vel = s:getVelocity()",
+  "local x, y = s:getPosition()",
+  "local vx, vy = s:getVelocity()",
   "local rot = s:getRotation()",
-  "local heading = rot + 90",
-  "if heading < 0 then heading = heading + 360 end",
-  "if heading >= 360 then heading = heading - 360 end",
+  "local heading = s:getHeading()",
+  "local speed = math.sqrt(vx * vx + vy * vy)",
+  "local impulse_level = 0.0",
+  "local impulse_request = 0.0",
+  "local drive = s.components.impulse_engine",
+  "if drive ~= nil then",
+  "  impulse_level = drive.actual",
+  "  impulse_request = drive.request",
+  "end",
   "return toJSON({",
   "  callsign = s:getCallSign(),",
-  "  x = pos.x,",
-  "  y = pos.y,",
+  "  x = x,",
+  "  y = y,",
   "  rotation = rot,",
   "  heading = heading,",
-  "  velocity_x = vel.x,",
-  "  velocity_y = vel.y,",
-  "  speed = s:getSpeed(),",
-  "  impulse_level = s:getImpulseLevel(),",
+  "  velocity_x = vx,",
+  "  velocity_y = vy,",
+  "  speed = speed,",
+  "  impulse_level = impulse_level,",
+  "  impulse_request = impulse_request,",
   "  energy_level = s:getEnergyLevel(),",
-  "  energy_max = s:getEnergyMax(),",
+  "  energy_max = s:getEnergyLevelMax(),",
   "  systems = {",
   '    reactor = { power = s:getSystemPower("reactor"), coolant = s:getSystemCoolant("reactor"),',
   '      health = s:getSystemHealth("reactor"), heat = s:getSystemHeat("reactor") },',
@@ -50,6 +57,7 @@ export type Observation = {
   velocity: { x: number; y: number };
   speed: number;
   impulse_level: number;
+  impulse_request: number;
   energy_level: number;
   energy_max: number;
   systems: Record<ObservedSystem, SystemReading>;
@@ -154,6 +162,7 @@ export function parseObservationBody(body: string): ObservationResult {
     "velocity_y",
     "speed",
     "impulse_level",
+    "impulse_request",
     "energy_level",
     "energy_max",
   ] as const;
@@ -169,14 +178,15 @@ export function parseObservationBody(body: string): ObservationResult {
     }
     numbers[field] = value;
   }
-  if (numbers["heading"] < 0 || numbers["heading"] >= 360) {
+  if (numbers["heading"] < -360 || numbers["heading"] > 720) {
     return {
       ok: false,
       code: "INVALID_FIELD",
-      detail: `heading ${String(numbers["heading"])} is outside [0,360)`,
+      detail: `heading ${String(numbers["heading"])} is not an angle in degrees`,
       raw: body,
     };
   }
+  const heading = normalizeDegrees(numbers["heading"]);
   const systemsValue = record["systems"];
   if (
     typeof systemsValue !== "object" ||
@@ -208,10 +218,11 @@ export function parseObservationBody(body: string): ObservationResult {
     callsign,
     position: { x: numbers["x"], y: numbers["y"] },
     rotation: numbers["rotation"],
-    heading: numbers["heading"],
+    heading,
     velocity: { x: numbers["velocity_x"], y: numbers["velocity_y"] },
     speed: numbers["speed"],
     impulse_level: numbers["impulse_level"],
+    impulse_request: numbers["impulse_request"],
     energy_level: numbers["energy_level"],
     energy_max: numbers["energy_max"],
     systems,
