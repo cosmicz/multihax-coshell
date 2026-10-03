@@ -513,6 +513,18 @@ const INTENT_EXAMPLES: ReadonlyArray<{
     role: "weapons",
     args: { callsign: "Crusader Naa'Tvek" },
   },
+  {
+    intent: "load_tube",
+    role: "weapons",
+    args: { tube: 0, weapon: "Homing" },
+  },
+  {
+    intent: "fire_tube",
+    role: "weapons",
+    args: { tube: 0, callsign: "Crusader Naa'Tvek" },
+  },
+  { intent: "set_shields", role: "weapons", args: { active: true } },
+  { intent: "set_beam_frequency", role: "weapons", args: { frequency: 10 } },
 ];
 
 export function printScripts(callsign: string, enemyCallsign: string): string {

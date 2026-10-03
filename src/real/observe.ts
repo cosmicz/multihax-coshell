@@ -49,6 +49,7 @@ export function buildObservationLua(callsign: string): string {
     "local other_x = 0.0",
     "local other_y = 0.0",
     "local other_distance = 0.0",
+    "local other_shield_frequency = 0",
     "if other ~= nil then",
     "  other_callsign = other:getCallSign()",
     "  local other_faction_name = other:getFaction()",
@@ -57,6 +58,12 @@ export function buildObservationLua(callsign: string): string {
     "  other_x = ox",
     "  other_y = oy",
     "  other_distance = math.sqrt((ox - x) * (ox - x) + (oy - y) * (oy - y))",
+    "  other_shield_frequency = other:getShieldsFrequency()",
+    "end",
+    "local tube_count = s:getWeaponTubeCount()",
+    "local tube_loads = {}",
+    "for idx = 0, tube_count - 1 do",
+    "  tube_loads[idx] = s:getWeaponTubeLoadType(idx)",
     "end",
     "return toJSON({",
     "  callsign = s:getCallSign(),",
@@ -79,11 +86,26 @@ export function buildObservationLua(callsign: string): string {
     "  shield_max = shield_max,",
     "  shield_levels = shield_levels,",
     "  shield_maxes = shield_maxes,",
+    "  shield_frequency = s:getShieldsFrequency(),",
+    "  beam_frequency = s:getBeamFrequency(),",
+    "  tube_count = tube_count,",
+    "  tube_loads = tube_loads,",
+    "  stock_homing = s:getWeaponStorage(\"Homing\"),",
+    "  stock_homing_max = s:getWeaponStorageMax(\"Homing\"),",
+    "  stock_nuke = s:getWeaponStorage(\"Nuke\"),",
+    "  stock_nuke_max = s:getWeaponStorageMax(\"Nuke\"),",
+    "  stock_mine = s:getWeaponStorage(\"Mine\"),",
+    "  stock_mine_max = s:getWeaponStorageMax(\"Mine\"),",
+    "  stock_emp = s:getWeaponStorage(\"EMP\"),",
+    "  stock_emp_max = s:getWeaponStorageMax(\"EMP\"),",
+    "  stock_hvli = s:getWeaponStorage(\"HVLI\"),",
+    "  stock_hvli_max = s:getWeaponStorageMax(\"HVLI\"),",
     "  other_callsign = other_callsign,",
     "  other_faction = other_faction,",
     "  other_x = other_x,",
     "  other_y = other_y,",
     "  other_distance = other_distance,",
+    "  other_shield_frequency = other_shield_frequency,",
     "  systems = {",
     '    reactor = { power = s:getSystemPower("reactor"), coolant = s:getSystemCoolant("reactor"),',
     '      health = s:getSystemHealth("reactor"), heat = s:getSystemHeat("reactor") },',
@@ -108,6 +130,14 @@ export type SystemReading = {
   coolant: number;
   health: number;
   heat: number;
+};
+
+export const MISSILE_SLOTS = ["homing", "nuke", "mine", "emp", "hvli"] as const;
+export type MissileSlot = (typeof MISSILE_SLOTS)[number];
+
+export type MissileStock = {
+  stock: number;
+  max: number;
 };
 
 export type OtherShip = {
@@ -136,6 +166,11 @@ export type Observation = {
   shield_max: number;
   shield_levels: number[];
   shield_maxes: number[];
+  shield_frequency: number;
+  beam_frequency: number;
+  tube_count: number;
+  tube_loads: (string | null)[];
+  missiles: Record<MissileSlot, MissileStock>;
   other_ship: OtherShip | null;
   systems: Record<ObservedSystem, SystemReading>;
 };
@@ -253,6 +288,9 @@ export function parseObservationBody(body: string): ObservationResult {
     "shield_count",
     "shield_level",
     "shield_max",
+    "shield_frequency",
+    "beam_frequency",
+    "tube_count",
   ] as const;
   for (const field of required) {
     const value = finite(record[field]);
@@ -265,6 +303,20 @@ export function parseObservationBody(body: string): ObservationResult {
       };
     }
     numbers[field] = value;
+  }
+  const missiles = {} as Record<MissileSlot, MissileStock>;
+  for (const slot of MISSILE_SLOTS) {
+    const stock = finite(record[`stock_${slot}`]);
+    const max = finite(record[`stock_${slot}_max`]);
+    if (stock === null || max === null) {
+      return {
+        ok: false,
+        code: "INVALID_FIELD",
+        detail: `stock_${slot} and stock_${slot}_max must be finite numbers`,
+        raw: body,
+      };
+    }
+    missiles[slot] = { stock, max };
   }
   if (numbers["heading"] < -360 || numbers["heading"] > 720) {
     return {
@@ -325,6 +377,11 @@ export function parseObservationBody(body: string): ObservationResult {
     shield_max: numbers["shield_max"],
     shield_levels: readIndexSeries(record["shield_levels"], "shield_levels", body),
     shield_maxes: readIndexSeries(record["shield_maxes"], "shield_maxes", body),
+    shield_frequency: numbers["shield_frequency"],
+    beam_frequency: numbers["beam_frequency"],
+    tube_count: numbers["tube_count"],
+    tube_loads: readStringIndexSeries(record["tube_loads"]),
+    missiles,
     other_ship: otherRaw,
     systems,
   };
@@ -348,6 +405,21 @@ function readIndexSeries(value: unknown, label: string, raw: string): number[] {
   }
   void label;
   void raw;
+  return out;
+}
+
+function readStringIndexSeries(value: unknown): (string | null)[] {
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).filter((key) => /^[0-9]+$/.test(key));
+  keys.sort((left, right) => Number(left) - Number(right));
+  const out: (string | null)[] = [];
+  for (const key of keys) {
+    const entry = record[key];
+    out.push(typeof entry === "string" ? entry : null);
+  }
   return out;
 }
 
@@ -470,6 +542,9 @@ export function parseObservationObject(value: unknown): ObservationResult {
     "shield_count",
     "shield_level",
     "shield_max",
+    "shield_frequency",
+    "beam_frequency",
+    "tube_count",
   ] as const) {
     const value2 = finite(record[field]);
     if (value2 === null) {
@@ -481,6 +556,32 @@ export function parseObservationObject(value: unknown): ObservationResult {
       };
     }
     numbers[field] = value2;
+  }
+  const missiles = {} as Record<MissileSlot, MissileStock>;
+  const missilesValue = record["missiles"];
+  if (
+    typeof missilesValue !== "object" ||
+    missilesValue === null ||
+    Array.isArray(missilesValue)
+  ) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "missiles must be an object",
+      raw,
+    };
+  }
+  for (const slot of MISSILE_SLOTS) {
+    const entry = (missilesValue as Record<string, unknown>)[slot];
+    const stock = readStockNumber(entry, "stock", slot, raw);
+    if (typeof stock !== "number") {
+      return stock;
+    }
+    const max = readStockNumber(entry, "max", slot, raw);
+    if (typeof max !== "number") {
+      return max;
+    }
+    missiles[slot] = { stock, max };
   }
   const x = nestedNumber(record["position"], "x", "position", raw);
   if (typeof x !== "number") {
@@ -560,10 +661,41 @@ export function parseObservationObject(value: unknown): ObservationResult {
       shield_max: numbers["shield_max"],
       shield_levels: readNumberArray(record["shield_levels"]),
       shield_maxes: readNumberArray(record["shield_maxes"]),
+      shield_frequency: numbers["shield_frequency"],
+      beam_frequency: numbers["beam_frequency"],
+      tube_count: numbers["tube_count"],
+      tube_loads: readStringArray(record["tube_loads"]),
+      missiles,
       other_ship: other,
       systems,
     },
   };
+}
+
+function readStockNumber(
+  entry: unknown,
+  key: string,
+  slot: string,
+  raw: string,
+): number | ObservationResult {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: `missiles.${slot} must be an object`,
+      raw,
+    };
+  }
+  const value = finite((entry as Record<string, unknown>)[key]);
+  if (value === null) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: `missiles.${slot}.${key} must be a finite number`,
+      raw,
+    };
+  }
+  return value;
 }
 
 function readNumberArray(value: unknown): number[] {
@@ -577,6 +709,17 @@ function readNumberArray(value: unknown): number[] {
       return [];
     }
     out.push(number);
+  }
+  return out;
+}
+
+function readStringArray(value: unknown): (string | null)[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: (string | null)[] = [];
+  for (const entry of value) {
+    out.push(typeof entry === "string" ? entry : null);
   }
   return out;
 }

@@ -1,5 +1,7 @@
 # multihax: LLM bridge crew for EmptyEpsilon
 
+Live native 3D view: https://multihax-view-20261003.style.dev/vnc.html?autoconnect=true&resize=scale&view_only=true&path=websockify
+
 Cooperating LLM role agents (helms and engineering) crew a ship in the unmodified
 open-source game EmptyEpsilon through our bounded, typed command API. Built at The
 Multiplayer Coding Hackathon (Coshell), 2026-10-03.
@@ -174,10 +176,38 @@ curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/j
   -d '{"role":"weapons","intent":"target_ship","args":{"callsign":"Crusader Naa'"'"'Tvek"},"agent_label":"weapons-agent"}'
 ```
 
-The VM resolves that callsign with the same `getPlayerShip(i)` loop, refuses a
-ship of the bound ship's own faction (`TARGET_SAME_FACTION`), refuses an unknown
-callsign (`TARGET_NOT_FOUND`) and otherwise calls `s:commandSetTarget(enemy)`.
-`RULE_CONTROLLERS` also accepts `weapons`, but no deterministic weapons
-controller exists, so `/state` always reports weapons as owned by an external
-role agent. Each observation carries the bound ship's faction, hull and shield
-levels and the other player ship's callsign, faction, position and distance.
+The VM resolves that callsign with the same `ipairs(getActivePlayerShips())`
+lookup, refuses a ship of the bound ship's own faction (`TARGET_SAME_FACTION`),
+refuses an unknown callsign (`TARGET_NOT_FOUND`) and otherwise calls
+`s:commandSetTarget(enemy)`. `RULE_CONTROLLERS` also accepts `weapons`, but no
+deterministic weapons controller exists, so `/state` always reports weapons as
+owned by an external role agent.
+
+Weapons intents (all bounded, all fixed templates on the bound ship `s`, all
+allowlisted on `POST /api/intent`):
+
+| Intent | Args | Lua |
+| --- | --- | --- |
+| `target_ship` | `{callsign}` | resolve enemy by callsign, differing faction, `s:commandSetTarget(enemy)` |
+| `load_tube` | `{tube, weapon}` | `s:commandLoadTube(tube, weapon)`, tube 0–15, weapon `Homing`/`Nuke`/`Mine`/`EMP`/`HVLI` |
+| `fire_tube` | `{tube, callsign}` | resolve enemy by callsign, differing faction, `s:commandFireTubeAtTarget(tube, enemy)` |
+| `set_shields` | `{active}` | `s:commandSetShields(active)` |
+| `set_beam_frequency` | `{frequency}` | `s:commandSetBeamFrequency(frequency)`, 0–20 |
+
+```
+curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/json' \
+  -d '{"role":"weapons","intent":"load_tube","args":{"tube":0,"weapon":"Homing"},"agent_label":"weapons-agent"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/json' \
+  -d '{"role":"weapons","intent":"fire_tube","args":{"tube":0,"callsign":"Crusader Naa'"'"'Tvek"},"agent_label":"weapons-agent"}'
+
+curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/json' \
+  -d '{"role":"weapons","intent":"set_shields","args":{"active":true},"agent_label":"weapons-agent"}'
+```
+
+Each observation carries the bound ship's faction, hull (`getHull`/`getHullMax`),
+per-shield levels (`getShieldCount`, zero-based `getShieldLevel`/`getShieldMax`),
+shield and beam frequency, missile stock per type (`getWeaponStorage`/
+`getWeaponStorageMax`), tube count and per-tube load type
+(`getWeaponTubeCount`, zero-based `getWeaponTubeLoadType`) and the other player
+ship's callsign, faction, position, distance and shield frequency.

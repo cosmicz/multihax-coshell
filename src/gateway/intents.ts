@@ -25,12 +25,29 @@ export function isSystemName(value: unknown): value is SystemName {
   return typeof value === "string" && SYSTEM_SET.has(value);
 }
 
+export const MISSILE_TYPES = ["Homing", "Nuke", "Mine", "EMP", "HVLI"] as const;
+export type MissileType = (typeof MISSILE_TYPES)[number];
+
+const MISSILE_SET: ReadonlySet<string> = new Set<string>(MISSILE_TYPES);
+
+export function isMissileType(value: unknown): value is MissileType {
+  return typeof value === "string" && MISSILE_SET.has(value);
+}
+
+export const MISSILE_TUBE_MAX = 15;
+export const BEAM_FREQUENCY_MIN = 0;
+export const BEAM_FREQUENCY_MAX = 20;
+
 export const INTENT_NAMES = [
   "heading_degrees",
   "impulse_fraction",
   "system_power_request",
   "system_coolant_request",
   "target_ship",
+  "load_tube",
+  "fire_tube",
+  "set_shields",
+  "set_beam_frequency",
 ] as const;
 export type IntentName = (typeof INTENT_NAMES)[number];
 
@@ -46,6 +63,10 @@ export const INTENT_ROLE: Readonly<Record<IntentName, SeatRole>> = {
   system_power_request: "engineering",
   system_coolant_request: "engineering",
   target_ship: "weapons",
+  load_tube: "weapons",
+  fire_tube: "weapons",
+  set_shields: "weapons",
+  set_beam_frequency: "weapons",
 };
 
 export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
@@ -73,7 +94,11 @@ export type ValidatedIntent =
       system: SystemName;
       level: number;
     }
-  | { intent: "target_ship"; callsign: string };
+  | { intent: "target_ship"; callsign: string }
+  | { intent: "load_tube"; tube: number; weapon: MissileType }
+  | { intent: "fire_tube"; tube: number; callsign: string }
+  | { intent: "set_shields"; active: boolean }
+  | { intent: "set_beam_frequency"; frequency: number };
 
 export type Classification =
   | { ok: true; intent: IntentName }
@@ -106,6 +131,15 @@ function isClosedRange(
   high: number,
 ): value is number {
   return isFiniteNumber(value) && value >= low && value <= high;
+}
+
+function isTubeIndex(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MISSILE_TUBE_MAX
+  );
 }
 
 export function validateIntentArgs(
@@ -158,6 +192,45 @@ export function validateIntentArgs(
         return { ok: false, code: "OUT_OF_RANGE" };
       }
       return { ok: true, intent: { intent, callsign } };
+    }
+    case "load_tube": {
+      const tube = args.tube;
+      const weapon = args.weapon;
+      if (!isTubeIndex(tube) || !isMissileType(weapon)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, tube, weapon } };
+    }
+    case "fire_tube": {
+      const tube = args.tube;
+      const callsign = args.callsign;
+      if (!isTubeIndex(tube) || !isValidCallsign(callsign)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, tube, callsign } };
+    }
+    case "set_shields": {
+      const active = args.active;
+      if (typeof active !== "boolean") {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, active } };
+    }
+    case "set_beam_frequency": {
+      const frequency = args.frequency;
+      if (!Number.isInteger(frequency)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      if (
+        (frequency as number) < BEAM_FREQUENCY_MIN ||
+        (frequency as number) > BEAM_FREQUENCY_MAX
+      ) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return {
+        ok: true,
+        intent: { intent, frequency: frequency as number },
+      };
     }
   }
 }

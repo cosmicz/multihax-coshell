@@ -79,6 +79,13 @@ export function enemyShipLookup(enemyCallsign: string): string[] {
   ];
 }
 
+export function formatTubeIndex(value: number): string {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new RangeError(`refusing to interpolate a non-integer index: ${String(value)}`);
+  }
+  return String(value);
+}
+
 function commandLine(intent: ValidatedIntent): string {
   switch (intent.intent) {
     case "heading_degrees":
@@ -91,6 +98,17 @@ function commandLine(intent: ValidatedIntent): string {
       return `s:commandSetSystemCoolantRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
     case "target_ship":
       return [...enemyShipLookup(intent.callsign), "s:commandSetTarget(enemy)"].join("\n");
+    case "load_tube":
+      return `s:commandLoadTube(${formatTubeIndex(intent.tube)}, ${luaString(intent.weapon)})`;
+    case "fire_tube":
+      return [
+        ...enemyShipLookup(intent.callsign),
+        `s:commandFireTubeAtTarget(${formatTubeIndex(intent.tube)}, enemy)`,
+      ].join("\n");
+    case "set_shields":
+      return `s:commandSetShields(${intent.active ? "true" : "false"})`;
+    case "set_beam_frequency":
+      return `s:commandSetBeamFrequency(${formatTubeIndex(intent.frequency)})`;
   }
 }
 

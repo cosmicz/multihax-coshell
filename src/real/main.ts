@@ -487,6 +487,8 @@ export function renderSpectatorPage(state: DriveState): string {
     "</head>",
     "<body>",
     "<h1>Agent-only EmptyEpsilon demo</h1>",
+    '<p class="notice"><a href="https://multihax-view-20261003.style.dev/vnc.html?autoconnect=true&resize=scale&view_only=true&path=websockify" target="_blank" rel="noopener">Open native 3D game view</a></p>',
+    '<p class="sub">This page shows telemetry and agent decisions; the link above shows the live native EmptyEpsilon view.</p>',
     `<p class="label" id="controller-label">${topLevelControllerLabel(state)} · team: ${state.options.team}</p>`,
     `<p class="notice" role="status">${TAGLINE}</p>`,
     '<p class="sub" id="vm"></p>',
