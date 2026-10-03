@@ -14,9 +14,9 @@ All engine names are verified against
 `raw.githubusercontent.com/daid/EmptyEpsilon/310bebd12f14d82239070445ad190d13680f124b/`.
 
 - [x] 1. Callsign safety: allowlist of letters, digits, space, underscore, hyphen and apostrophe, 1 to 40 characters, and a single Lua quoting function (long bracket, else escaped) — no raw splicing
-- [x] 2. Per-ship lookup loop `for i = 1, 32` over `getPlayerShip(i)` in the observation and in the command templates, with `SHIP_NOT_FOUND` and the existing `SHIP_MISMATCH` guard
+- [ ] 2. Per-ship lookup by callsign over `getActivePlayerShips()` (compact list; `getPlayerShip(i)` has holes at `src/script.cpp:1374` and `getPlayerShip(-1)` is never used) in the observation and in the command templates, with `SHIP_NOT_FOUND` / `TARGET_NOT_FOUND` and the existing `SHIP_MISMATCH` guard
 - [x] 3. `src/vmapi/server.ts`: `SHIP_CALLSIGN` required, no first-observation binding, several instances side by side (ports 8790/8791, own tokens), weapons seat claimed for `agent-weapons`
-- [x] 4. Weapons role with `target_ship {callsign}`: enemy player ship resolved by the same loop, faction must differ, `s:commandSetTarget(enemy)`; allowlist, actor, VM route and drive `/api/intent` extended; observation gains hull, shield and the other player ship
+- [x] 4. Weapons role with `target_ship {callsign}`: enemy player ship resolved by the same lookup, faction must differ, `s:commandSetTarget(enemy)`; allowlist, actor, VM route and drive `/api/intent` extended; observation gains hull, shield and the other player ship
 - [x] 5. Drive: `TEAM` label on `/state` and the page header, `RULE_CONTROLLERS` also accepts `weapons`
 - [x] 6. README "PvP mode" section with two vmapi instances and two drive instances
 
@@ -24,7 +24,8 @@ All engine names are verified against
 
 | Name | Kind | Source |
 | --- | --- | --- |
-| `getPlayerShip(i)` | global, 1-based index over `PlayerControl` entities | `src/script.cpp` `static sp::ecs::Entity luaGetPlayerShip(int index)` |
+| `getActivePlayerShips()` | global, compact 1..n table of `PlayerControl` entities — **the only ship enumeration used** | `src/script.cpp:1379` registration; `static int luaGetActivePlayerShips(lua_State* L)` builds a fresh table with `lua_rawseti(L, -2, index++)` |
+| `getPlayerShip(i)` | global, 1-based, **has holes and is never used here**; `getPlayerShip(-1)` also unused | `src/script.cpp:1374`, `static sp::ecs::Entity luaGetPlayerShip(int index)` |
 | `Entity:getCallSign()` | string | `scripts/api/entity/spaceobject.lua` |
 | `Entity:getFaction()` | faction name string | `scripts/api/entity/spaceobject.lua` `return f.entity.components.faction_info.name` |
 | `Entity:getPosition()` | `x, y` numbers | `scripts/api/entity/spaceobject.lua` `return table.unpack(...)` |
@@ -41,4 +42,6 @@ All engine names are verified against
 | `toJSON` | global | `src/script.cpp` `static int luaToJSON(lua_State* L)` |
 
 Not in the pinned source, therefore never used: `getSpeed`, `getImpulseLevel`,
-`getEnergyMax`, `getHull`, `getShields`, `getImpulse`.
+`getEnergyMax`, `getHull`, `getShields`, `getImpulse`. Ship enumeration is
+always `ipairs(getActivePlayerShips())`, never an index scan that can stop at a
+nil.

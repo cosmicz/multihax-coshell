@@ -73,14 +73,13 @@ node --experimental-transform-types src/vmapi/server.ts
 | `VMAPI_HOST` | `127.0.0.1` | Raise only behind a tunnel or private NIC |
 | `VMAPI_PORT` | `8790` | Listen port |
 | `EE_HTTP` | `http://127.0.0.1:8080` | Engine httpserver; loopback only |
-| `SHIP_CALLSIGN` | unset | Fixed binding; unset binds the first observation |
-| `BIND_RETRIES` / `BIND_RETRY_MS` | `30` / `1000` | Bind retries, then exit code 1 |
+| `SHIP_CALLSIGN` | required | Ship this instance controls; there is no first-observation binding |
 | `EPOCH` | `1` | Gateway epoch |
 | `EE_TIMEOUT_MS` | `3000` | `/exec.lua` timeout |
 
 `node --experimental-transform-types src/vmapi/server.ts --print-scripts` prints
-the fixed observation Lua and one example per command type without touching the
-engine.
+the per-ship observation Lua and one example per command type without touching
+the engine.
 
 ## Drive (this machine)
 
@@ -113,15 +112,72 @@ node --experimental-transform-types src/real/main.ts
 | `EE_API_TOKEN_FILE` | unset | Secret file; read once, trimmed, ≥16 characters; wins over `EE_API_TOKEN` |
 | `EE_API_TOKEN` | unset | Bearer token when no file is given |
 | `EE_API_TIMEOUT_MS` | `3000` | API request timeout |
-| `RULE_CONTROLLERS` | `helms,engineering` | Comma list of `helms`/`engineering`, or `off` |
+| `RULE_CONTROLLERS` | `helms,engineering` | Comma list of `helms`/`engineering`/`weapons`, or `off` |
+| `TEAM` | `unassigned` | Free-text label shown on `/state` and the page header |
 | `PORT` / `SPECTATOR_HOST` | `3000` / `127.0.0.1` | Command listener bind; loopback only |
 | `PUBLIC_PORT` / `PUBLIC_HOST` | `3001` / `0.0.0.0` | Read-only public spectator bind |
 | `TICK_MS` | `2000` | Loop period |
 | `WAYPOINT_X` / `WAYPOINT_Y` | unset | Optional helm waypoint |
 | `HEADING_DEG` | `90` | Held heading when no waypoint is set |
+| `SHIP_CALLSIGN` | unset | Optional assertion; startup fails if it disagrees with the VM API |
 
 With `RULE_CONTROLLERS=off` both roles report `owner: "external role agent"` in
 `/state`; role agents then drive the ship only through `POST /api/intent`
 (`{role, intent, args, agent_label?, request_id?}`, allowlisted intents, 10 per
 minute per role) and read their own last 20 outcomes from
 `/state` → `roles.<role>.decisions`.
+
+## PvP mode
+
+Upstream `scripts/scenario_81_pvp.lua` (unchanged) spawns two Atlantis player
+ships: `HNS Gallipoli` (Human Navy) and `Crusader Naa'Tvek` (Kraylor). Each side
+runs its own vmapi instance and its own drive instance, and every instance
+addresses its ship by `SHIP_CALLSIGN` — the apostrophe in `Naa'Tvek` is fine, and
+no instance ever touches the other side's ship.
+
+Two vmapi instances on the VM (different ports, different tokens):
+
+```
+VMAPI_TOKEN=<token-for-gallipoli> VMAPI_PORT=8790 \
+SHIP_CALLSIGN="HNS Gallipoli" EE_HTTP=http://127.0.0.1:8080 \
+node --experimental-transform-types src/vmapi/server.ts
+
+VMAPI_TOKEN=<token-for-crusader> VMAPI_PORT=8791 \
+SHIP_CALLSIGN="Crusader Naa'Tvek" EE_HTTP=http://127.0.0.1:8080 \
+node --experimental-transform-types src/vmapi/server.ts
+```
+
+`SHIP_CALLSIGN` is required, so a typo fails loudly instead of silently flying
+the wrong ship. Each instance claims helms, engineering and weapons for
+`agent-helm`, `agent-eng` and `agent-weapons`.
+
+Two drive instances (different ports, different tokens):
+
+```
+TEAM=Human \
+EE_API_URL=https://multihax-ee-20261003.style.dev \
+EE_API_TOKEN_FILE=/home/ubuntu/.multihax/vmapi-gallipoli.token \
+RULE_CONTROLLERS=off PORT=3000 PUBLIC_PORT=3001 \
+node --experimental-transform-types src/real/main.ts
+
+TEAM=Kraylor \
+EE_API_URL=https://multihax-ee-20261003.style.dev \
+EE_API_TOKEN_FILE=/home/ubuntu/.multihax/vmapi-crusader.token \
+RULE_CONTROLLERS=off PORT=3010 PUBLIC_PORT=3011 \
+node --experimental-transform-types src/real/main.ts
+```
+
+Weapons is flown by a role agent through the allowlisted `target_ship` intent:
+
+```
+curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/json' \
+  -d '{"role":"weapons","intent":"target_ship","args":{"callsign":"Crusader Naa'"'"'Tvek"},"agent_label":"weapons-agent"}'
+```
+
+The VM resolves that callsign with the same `getPlayerShip(i)` loop, refuses a
+ship of the bound ship's own faction (`TARGET_SAME_FACTION`), refuses an unknown
+callsign (`TARGET_NOT_FOUND`) and otherwise calls `s:commandSetTarget(enemy)`.
+`RULE_CONTROLLERS` also accepts `weapons`, but no deterministic weapons
+controller exists, so `/state` always reports weapons as owned by an external
+role agent. Each observation carries the bound ship's faction, hull and shield
+levels and the other player ship's callsign, faction, position and distance.

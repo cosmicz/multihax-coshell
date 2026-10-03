@@ -7,8 +7,6 @@ export { CALLSIGN_PATTERN, isValidCallsign };
 
 const NUMERIC_LITERAL = /^-?(?:0|[1-9][0-9]*)\.[0-9]+$/;
 
-const MAX_PLAYER_SHIP_SCAN = 32;
-
 function escapeLuaString(value: string): string {
   const escaped = value
     .replace(/\\/g, "\\\\")
@@ -43,14 +41,10 @@ export function shipLookup(callsign: string): string[] {
     throw new TypeError(`invalid callsign: ${String(callsign)}`);
   }
   const wanted = luaString(callsign);
-  const scan = String(MAX_PLAYER_SHIP_SCAN);
   return [
     "local s = nil",
-    `for i = 1, ${scan} do`,
-    "  local candidate = getPlayerShip(i)",
-    "  if candidate ~= nil then",
-    `    if candidate:getCallSign() == ${wanted} then s = candidate break end`,
-    "  end",
+    "for _, candidate in ipairs(getActivePlayerShips()) do",
+    `  if candidate:getCallSign() == ${wanted} then s = candidate break end`,
     "end",
     'if s == nil then return toJSON({error="SHIP_NOT_FOUND"}) end',
   ];
@@ -68,6 +62,23 @@ export function occupancyGuard(callsign: string, role: SeatRole): string[] {
   ];
 }
 
+export function enemyShipLookup(enemyCallsign: string): string[] {
+  if (!isValidCallsign(enemyCallsign)) {
+    throw new TypeError(`invalid target callsign: ${String(enemyCallsign)}`);
+  }
+  const wanted = luaString(enemyCallsign);
+  return [
+    "local enemy = nil",
+    "for _, candidate in ipairs(getActivePlayerShips()) do",
+    `  if candidate:getCallSign() == ${wanted} then enemy = candidate break end`,
+    "end",
+    'if enemy == nil then return toJSON({error="TARGET_NOT_FOUND"}) end',
+    "if enemy:getFaction() == s:getFaction() then",
+    '  return toJSON({error="TARGET_SAME_FACTION"})',
+    "end",
+  ];
+}
+
 function commandLine(intent: ValidatedIntent): string {
   switch (intent.intent) {
     case "heading_degrees":
@@ -79,30 +90,8 @@ function commandLine(intent: ValidatedIntent): string {
     case "system_coolant_request":
       return `s:commandSetSystemCoolantRequest(${luaString(intent.system)}, ${formatNumber(intent.level, 1)})`;
     case "target_ship":
-      return targetShipLines(intent.callsign).join("\n");
+      return [...enemyShipLookup(intent.callsign), "s:commandSetTarget(enemy)"].join("\n");
   }
-}
-
-export function targetShipLines(enemyCallsign: string): string[] {
-  if (!isValidCallsign(enemyCallsign)) {
-    throw new TypeError(`invalid target callsign: ${String(enemyCallsign)}`);
-  }
-  const wanted = luaString(enemyCallsign);
-  const scan = String(MAX_PLAYER_SHIP_SCAN);
-  return [
-    "local enemy = nil",
-    `for i = 1, ${scan} do`,
-    "  local candidate = getPlayerShip(i)",
-    "  if candidate ~= nil and candidate:getCallSign() ~= s:getCallSign() then",
-    `    if candidate:getCallSign() == ${wanted} then enemy = candidate break end`,
-    "  end",
-    "end",
-    'if enemy == nil then return toJSON({error="TARGET_NOT_FOUND"}) end',
-    "if enemy:getFaction() == s:getFaction() then",
-    '  return toJSON({error="TARGET_SAME_FACTION"})',
-    "end",
-    "s:commandSetTarget(enemy)",
-  ];
 }
 
 export type LuaRenderInput = {

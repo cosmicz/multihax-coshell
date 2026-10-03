@@ -1,25 +1,19 @@
 import { isValidCallsign, luaString } from "../gateway/lua.ts";
 import type { EeExecResult, EeExecLuaPort } from "./eeport.ts";
 
-export const MAX_PLAYER_SHIP_SCAN = 32;
-
 export function buildObservationLua(callsign: string): string {
   if (!isValidCallsign(callsign)) {
     throw new TypeError(`invalid callsign: ${String(callsign)}`);
   }
   const wanted = luaString(callsign);
-  const scan = String(MAX_PLAYER_SHIP_SCAN);
   return [
     "local s = nil",
     "local other = nil",
-    `for i = 1, ${scan} do`,
-    "  local candidate = getPlayerShip(i)",
-    "  if candidate ~= nil then",
-    `    if candidate:getCallSign() == ${wanted} then`,
-    "      s = candidate",
-    "    elseif other == nil then",
-    "      other = candidate",
-    "    end",
+    "for _, candidate in ipairs(getActivePlayerShips()) do",
+    `  if candidate:getCallSign() == ${wanted} then`,
+    "    s = candidate",
+    "  elseif other == nil then",
+    "    other = candidate",
     "  end",
     "end",
     'if s == nil then return toJSON({error="SHIP_NOT_FOUND"}) end',
@@ -35,21 +29,20 @@ export function buildObservationLua(callsign: string): string {
     "  impulse_level = drive.actual",
     "  impulse_request = drive.request",
     "end",
-    "local hull_level = 0.0",
-    "local hull_max = 0.0",
-    "local hull = s.components.hull",
-    "if hull ~= nil then",
-    "  hull_level = hull.current",
-    "  hull_max = hull.max",
-    "end",
+    "local hull_level = s:getHull()",
+    "local hull_max = s:getHullMax()",
+    "local shield_count = s:getShieldCount()",
     "local shield_level = 0.0",
     "local shield_max = 0.0",
-    "local shields = s.components.shields",
-    "if shields ~= nil then",
-    "  for idx = 0, shields.entries.length - 1 do",
-    "    shield_level = shield_level + shields.entries[idx].level",
-    "    shield_max = shield_max + shields.entries[idx].max",
-    "  end",
+    "local shield_levels = {}",
+    "local shield_maxes = {}",
+    "for idx = 0, shield_count - 1 do",
+    "  local level = s:getShieldLevel(idx)",
+    "  local maximum = s:getShieldMax(idx)",
+    "  shield_levels[idx] = level",
+    "  shield_maxes[idx] = maximum",
+    "  shield_level = shield_level + level",
+    "  shield_max = shield_max + maximum",
     "end",
     "local other_callsign = false",
     "local other_faction = false",
@@ -81,8 +74,11 @@ export function buildObservationLua(callsign: string): string {
     "  energy_max = s:getEnergyLevelMax(),",
     "  hull_level = hull_level,",
     "  hull_max = hull_max,",
+    "  shield_count = shield_count,",
     "  shield_level = shield_level,",
     "  shield_max = shield_max,",
+    "  shield_levels = shield_levels,",
+    "  shield_maxes = shield_maxes,",
     "  other_callsign = other_callsign,",
     "  other_faction = other_faction,",
     "  other_x = other_x,",
@@ -135,8 +131,11 @@ export type Observation = {
   energy_max: number;
   hull_level: number;
   hull_max: number;
+  shield_count: number;
   shield_level: number;
   shield_max: number;
+  shield_levels: number[];
+  shield_maxes: number[];
   other_ship: OtherShip | null;
   systems: Record<ObservedSystem, SystemReading>;
 };
@@ -251,6 +250,7 @@ export function parseObservationBody(body: string): ObservationResult {
     "energy_max",
     "hull_level",
     "hull_max",
+    "shield_count",
     "shield_level",
     "shield_max",
   ] as const;
@@ -320,12 +320,35 @@ export function parseObservationBody(body: string): ObservationResult {
     energy_max: numbers["energy_max"],
     hull_level: numbers["hull_level"],
     hull_max: numbers["hull_max"],
+    shield_count: numbers["shield_count"],
     shield_level: numbers["shield_level"],
     shield_max: numbers["shield_max"],
+    shield_levels: readIndexSeries(record["shield_levels"], "shield_levels", body),
+    shield_maxes: readIndexSeries(record["shield_maxes"], "shield_maxes", body),
     other_ship: otherRaw,
     systems,
   };
   return { ok: true, observation, raw: body };
+}
+
+function readIndexSeries(value: unknown, label: string, raw: string): number[] {
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).filter((key) => /^[0-9]+$/.test(key));
+  keys.sort((left, right) => Number(left) - Number(right));
+  const out: number[] = [];
+  for (const key of keys) {
+    const entry = finite(record[key]);
+    if (entry === null) {
+      return [];
+    }
+    out.push(entry);
+  }
+  void label;
+  void raw;
+  return out;
 }
 
 function readOtherShip(
@@ -444,6 +467,7 @@ export function parseObservationObject(value: unknown): ObservationResult {
     "energy_max",
     "hull_level",
     "hull_max",
+    "shield_count",
     "shield_level",
     "shield_max",
   ] as const) {
@@ -531,12 +555,30 @@ export function parseObservationObject(value: unknown): ObservationResult {
       energy_max: numbers["energy_max"],
       hull_level: numbers["hull_level"],
       hull_max: numbers["hull_max"],
+      shield_count: numbers["shield_count"],
       shield_level: numbers["shield_level"],
       shield_max: numbers["shield_max"],
+      shield_levels: readNumberArray(record["shield_levels"]),
+      shield_maxes: readNumberArray(record["shield_maxes"]),
       other_ship: other,
       systems,
     },
   };
+}
+
+function readNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: number[] = [];
+  for (const entry of value) {
+    const number = finite(entry);
+    if (number === null) {
+      return [];
+    }
+    out.push(number);
+  }
+  return out;
 }
 
 function readOtherShipObject(value: unknown, raw: string): OtherShip | null | string {
