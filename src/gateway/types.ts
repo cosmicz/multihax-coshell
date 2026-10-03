@@ -21,6 +21,7 @@ export const REFUSAL_CODES = [
   "OUT_OF_RANGE",
   "DUPLICATE_MISMATCH",
   "OCCUPIED",
+  "NOT_VISIBLE",
 ] as const;
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 

@@ -188,11 +188,18 @@ allowlisted on `POST /api/intent`):
 
 | Intent | Args | Lua |
 | --- | --- | --- |
-| `target_ship` | `{callsign}` | resolve enemy by callsign, differing faction, `s:commandSetTarget(enemy)` |
+| `target_ship` | `{callsign}` | resolve enemy by callsign, differing faction, visible, `s:commandSetTarget(enemy)` |
 | `load_tube` | `{tube, weapon}` | `s:commandLoadTube(tube, weapon)`, tube 0–15, weapon `Homing`/`Nuke`/`Mine`/`EMP`/`HVLI` |
-| `fire_tube` | `{tube, callsign}` | resolve enemy by callsign, differing faction, `s:commandFireTubeAtTarget(tube, enemy)` |
+| `fire_tube` | `{tube, callsign}` | resolve enemy by callsign, differing faction, visible, `s:commandFireTubeAtTarget(tube, enemy)` |
 | `set_shields` | `{active}` | `s:commandSetShields(active)` |
 | `set_beam_frequency` | `{frequency}` | `s:commandSetBeamFrequency(frequency)`, 0–20 |
+
+Visibility is the engine's own radar logic: a contact counts only when
+`distance <= s:getLongRangeRadarRange()` and
+`not s:isRadarBlockedFrom({x=ox, y=oy}, enemy, s:getShortRangeRadarRange())`.
+Outside that, `target_ship` and `fire_tube` are refused with `NOT_VISIBLE` and
+the observation reports `other_ship: null` with no enemy-derived field. This says
+nothing about hard cover from planets or asteroids.
 
 ```
 curl -s -X POST http://127.0.0.1:3000/api/intent -H 'content-type: application/json' \

@@ -50,15 +50,23 @@ export function buildObservationLua(callsign: string): string {
     "local other_y = 0.0",
     "local other_distance = 0.0",
     "local other_shield_frequency = 0",
-    "if other ~= nil then",
-    "  other_callsign = other:getCallSign()",
-    "  local other_faction_name = other:getFaction()",
-    "  if other_faction_name ~= nil then other_faction = other_faction_name end",
-    "  local ox, oy = other:getPosition()",
-    "  other_x = ox",
-    "  other_y = oy",
-    "  other_distance = math.sqrt((ox - x) * (ox - x) + (oy - y) * (oy - y))",
-    "  other_shield_frequency = other:getShieldsFrequency()",
+    "if other ~= nil and other:getFaction() ~= s:getFaction() then",
+    "  local long_range = s:getLongRangeRadarRange()",
+    "  local short_range = s:getShortRangeRadarRange()",
+    "  local ox, oy = s:getPosition()",
+    "  local ex, ey = other:getPosition()",
+    "  local separation = math.sqrt((ex - ox) * (ex - ox) + (ey - oy) * (ey - oy))",
+    "  local visible = separation <= long_range",
+    "  if visible and s:isRadarBlockedFrom({x=ox, y=oy}, other, short_range) then visible = false end",
+    "  if visible then",
+    "    other_callsign = other:getCallSign()",
+    "    local other_faction_name = other:getFaction()",
+    "    if other_faction_name ~= nil then other_faction = other_faction_name end",
+    "    other_x = ex",
+    "    other_y = ey",
+    "    other_distance = separation",
+    "    other_shield_frequency = other:getShieldsFrequency()",
+    "  end",
     "end",
     "local tube_count = s:getWeaponTubeCount()",
     "local tube_loads = {}",
@@ -733,14 +741,19 @@ function readOtherShipObject(value: unknown, raw: string): OtherShip | null | st
   }
   const record = value as Record<string, unknown>;
   const callsign = record["callsign"];
-  const x = finite(record["x"]);
-  const y = finite(record["y"]);
+  const position = record["position"];
+  const x =
+    finite(typeof position === "object" && position !== null ? (position as Record<string, unknown>)["x"] : undefined) ??
+    finite(record["x"]);
+  const y =
+    finite(typeof position === "object" && position !== null ? (position as Record<string, unknown>)["y"] : undefined) ??
+    finite(record["y"]);
   const distance = finite(record["distance"]);
   if (typeof callsign !== "string" || callsign.length === 0) {
     return "other_ship.callsign must be a non-empty string";
   }
   if (x === null || y === null || distance === null) {
-    return "other_ship x, y and distance must be finite numbers";
+    return "other_ship position.x, position.y and distance must be finite numbers";
   }
   return {
     callsign,

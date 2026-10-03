@@ -76,6 +76,14 @@ export function enemyShipLookup(enemyCallsign: string): string[] {
     "if enemy:getFaction() == s:getFaction() then",
     '  return toJSON({error="TARGET_SAME_FACTION"})',
     "end",
+    "local long_range = s:getLongRangeRadarRange()",
+    "local short_range = s:getShortRangeRadarRange()",
+    "local ox, oy = s:getPosition()",
+    "local ex, ey = enemy:getPosition()",
+    "local enemy_distance = math.sqrt((ex - ox) * (ex - ox) + (ey - oy) * (ey - oy))",
+    "local visible = enemy_distance <= long_range",
+    "if visible and s:isRadarBlockedFrom({x=ox, y=oy}, enemy, short_range) then visible = false end",
+    'if not visible then return toJSON({refused="NOT_VISIBLE"}) end',
   ];
 }
 

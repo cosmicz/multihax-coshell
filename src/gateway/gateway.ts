@@ -358,6 +358,13 @@ export class RoleScopedGateway {
         "a covering native station is occupied",
       );
     }
+    if (parsed.refused === "NOT_VISIBLE") {
+      return this.refuse(
+        requestId,
+        "NOT_VISIBLE",
+        "the engine reports the target is outside radar range or blocked",
+      );
+    }
     if (typeof parsed.error === "string") {
       return this.failed(
         requestId,
