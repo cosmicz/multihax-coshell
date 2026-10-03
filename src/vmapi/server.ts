@@ -525,6 +525,7 @@ const INTENT_EXAMPLES: ReadonlyArray<{
   },
   { intent: "set_shields", role: "weapons", args: { active: true } },
   { intent: "set_beam_frequency", role: "weapons", args: { frequency: 10 } },
+  { intent: "set_auto_repair", role: "engineering", args: { enabled: true } },
 ];
 
 export function printScripts(callsign: string, enemyCallsign: string): string {

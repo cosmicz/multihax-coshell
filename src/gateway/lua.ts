@@ -115,6 +115,8 @@ function commandLine(intent: ValidatedIntent): string {
       ].join("\n");
     case "set_shields":
       return `s:commandSetShields(${intent.active ? "true" : "false"})`;
+    case "set_auto_repair":
+      return `s:commandSetAutoRepair(${intent.enabled ? "true" : "false"})`;
     case "set_beam_frequency":
       return `s:commandSetBeamFrequency(${formatTubeIndex(intent.frequency)})`;
   }

@@ -48,6 +48,7 @@ export const INTENT_NAMES = [
   "fire_tube",
   "set_shields",
   "set_beam_frequency",
+  "set_auto_repair",
 ] as const;
 export type IntentName = (typeof INTENT_NAMES)[number];
 
@@ -67,6 +68,7 @@ export const INTENT_ROLE: Readonly<Record<IntentName, SeatRole>> = {
   fire_tube: "weapons",
   set_shields: "weapons",
   set_beam_frequency: "weapons",
+  set_auto_repair: "engineering",
 };
 
 export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
@@ -98,7 +100,8 @@ export type ValidatedIntent =
   | { intent: "load_tube"; tube: number; weapon: MissileType }
   | { intent: "fire_tube"; tube: number; callsign: string }
   | { intent: "set_shields"; active: boolean }
-  | { intent: "set_beam_frequency"; frequency: number };
+  | { intent: "set_beam_frequency"; frequency: number }
+  | { intent: "set_auto_repair"; enabled: boolean };
 
 export type Classification =
   | { ok: true; intent: IntentName }
@@ -215,6 +218,13 @@ export function validateIntentArgs(
         return { ok: false, code: "OUT_OF_RANGE" };
       }
       return { ok: true, intent: { intent, active } };
+    }
+    case "set_auto_repair": {
+      const enabled = args.enabled;
+      if (typeof enabled !== "boolean") {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, enabled } };
     }
     case "set_beam_frequency": {
       const frequency = args.frequency;
