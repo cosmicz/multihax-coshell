@@ -14,11 +14,11 @@ import {
 } from "./eeport.ts";
 import type { VmCommandRole, VmCommandSummary, VmHealth, VmSeatInfo } from "./eeport.ts";
 import {
-  CONTROLLER_LABEL,
   DECISION_HISTORY_LIMIT,
   DEFAULT_TARGET_HEADING,
   ENGINEERING_ACTOR_ID,
   EXTERNAL_INTENTS_PER_MINUTE,
+  EXTERNAL_ROLE_AGENT_LABEL,
   HELM_ACTOR_ID,
   MAX_AGENT_LABEL_LENGTH,
   MAX_INTENTS_PER_MINUTE,
@@ -257,6 +257,20 @@ export function rolePayload(state: DriveState, role: VmCommandRole): Record<stri
   };
 }
 
+export function topLevelControllerLabel(state: DriveState): string {
+  const helms = roleAgent(state, "helms").owner;
+  const engineering = roleAgent(state, "engineering").owner;
+  const helmExternal = helms === EXTERNAL_ROLE_AGENT_LABEL;
+  const engineeringExternal = engineering === EXTERNAL_ROLE_AGENT_LABEL;
+  if (helmExternal && engineeringExternal) {
+    return "LLM role agents (external, via POST /api/intent) control helms and engineering; rule-based controllers off";
+  }
+  if (!helmExternal && !engineeringExternal) {
+    return "deterministic controllers (rule-based, not LLM) control helms and engineering";
+  }
+  return `helms: ${helms}; engineering: ${engineering}`;
+}
+
 export function statePayload(state: DriveState): Record<string, unknown> {
   const now = Date.now();
   const observation: ObservationSnapshot = {
@@ -268,7 +282,7 @@ export function statePayload(state: DriveState): Record<string, unknown> {
     now: new Date(now).toISOString(),
     started_at: new Date(state.startedAt).toISOString(),
     uptime_ms: now - state.startedAt,
-    controller_label: CONTROLLER_LABEL,
+    controller_label: topLevelControllerLabel(state),
     ship: state.ship,
     epoch: state.epoch,
     vm: {
@@ -336,6 +350,7 @@ const PAGE_SCRIPT = [
   "var statusEl = document.getElementById('status');",
   "var vmEl = document.getElementById('vm');",
   "var ownersBody = document.getElementById('owners-body');",
+  "var labelEl = document.getElementById('controller-label');",
   "function cell(node, value, cls) {",
   "  var td = document.createElement('td');",
   "  td.textContent = value === null || value === undefined ? '-' : String(value);",
@@ -390,9 +405,10 @@ const PAGE_SCRIPT = [
   "  });",
   "}",
   "function renderAgents(state) {",
-  "  vmEl.textContent = 'vm api ' + state.vm.api_url + ' reachable=' + state.vm.reachable +",
+  "  vmEl.textContent = 'vm api reachable=' + state.vm.reachable +",
   "    ' calls=' + state.vm.calls + ' vm_seq=' + state.vm.observation_seq +",
   "    ' RULE_CONTROLLERS=' + state.rule_controllers.raw;",
+  "  labelEl.textContent = state.controller_label;",
   "  renderOwners(state.roles);",
   "  statusEl.textContent = Object.keys(state.agents).map(function (key) {",
   "    var a = state.agents[key];",
@@ -441,7 +457,7 @@ const PAGE_SCRIPT = [
   "setInterval(poll, 1000);",
 ].join("\n");
 
-export function renderSpectatorPage(controllerLabel: string): string {
+export function renderSpectatorPage(state: DriveState): string {
   return [
     "<!doctype html>",
     '<html lang="en">',
@@ -455,7 +471,7 @@ export function renderSpectatorPage(controllerLabel: string): string {
     "</head>",
     "<body>",
     "<h1>Agent-only EmptyEpsilon demo</h1>",
-    `<p class="label">${controllerLabel}</p>`,
+    `<p class="label" id="controller-label">${topLevelControllerLabel(state)}</p>`,
     `<p class="notice" role="status">${TAGLINE}</p>`,
     '<p class="sub" id="vm"></p>',
     '<p class="sub" id="status"></p>',
@@ -683,7 +699,7 @@ export function createSpectatorServer(state: DriveState): Server {
       return;
     }
     if (method === "GET" && pathname === "/") {
-      sendHtml(response, renderSpectatorPage(CONTROLLER_LABEL));
+      sendHtml(response, renderSpectatorPage(state));
       return;
     }
     if (method === "GET" && pathname === "/state") {
@@ -843,7 +859,7 @@ export function createPublicServer(state: DriveState): Server {
       return;
     }
     if (pathname === "/") {
-      sendHtml(response, renderSpectatorPage(CONTROLLER_LABEL));
+      sendHtml(response, renderSpectatorPage(state));
       return;
     }
     if (pathname === "/state") {
@@ -990,7 +1006,7 @@ export async function runDrive(options: DriveOptions): Promise<{
     vm_token_source: options.apiTokenSource,
     ship: state.ship,
     epoch: state.epoch,
-    controller_label: CONTROLLER_LABEL,
+    controller_label: topLevelControllerLabel(state),
   });
 
   const publicServer = createPublicServer(state);

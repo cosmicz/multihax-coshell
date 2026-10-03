@@ -1,4 +1,49 @@
-# multihax — real EmptyEpsilon adapter
+# multihax: LLM bridge crew for EmptyEpsilon
+
+Cooperating LLM role agents (helms and engineering) crew a ship in the unmodified
+open-source game EmptyEpsilon through our bounded, typed command API. Built at The
+Multiplayer Coding Hackathon (Coshell), 2026-10-03.
+
+## What is ours vs. upstream
+
+**Upstream, unchanged:** EmptyEpsilon (`daid/EmptyEpsilon`, GPL-2.0, official
+release `EE-2026.09.22PR`), run headless on a separate VM. We ship no engine patch.
+
+**Ours, in the demo path:**
+
+* `src/vmapi` — typed bearer-token API that observes and commands the ship and
+  generates all Lua itself from fixed templates.
+* `src/real` — the drive loop, `VmApiPort`, the spectator page and the external
+  role-agent intent endpoint.
+* `src/gateway` — the bounded command gateway: intent allowlist and bounds, seat
+  leases and generations, and the fixed Lua templates.
+
+**Present but not in the demo path:** `src/companion` (crew status and orders
+companion app) and `scenarios/` (the custom rescue scenario).
+
+## Demo scene
+
+The stock Basic scenario with `Enemies=Empty` and `Time=Unlimited` and an Atlantis
+player ship, so nothing unattended starts shooting. The spectator page shows live
+telemetry and agent decisions; it is **not** a browser rendering of the game.
+
+## Agents vs. controllers
+
+LLM role agents act only by POSTing to `/api/intent` on the drive's loopback
+command listener. The in-process rule-based loops are deterministic controllers,
+not LLM, and are switched off with `RULE_CONTROLLERS=off` for the demo so the LLM
+role agents own both seats.
+
+## Status
+
+No automated test suite, typecheck or code review is claimed for the current
+revision. Observed live on 2026-10-03 (22:22 to 22:23 UTC): with the rule-based
+controllers off, the helms and engineering LLM role agents turned the ship to
+heading 90, set impulse and system power and coolant, flew it east from the origin
+at about 75 units/s and stopped it at x of about 3429 (speed 0), as shown by the
+read-only spectator telemetry.
+
+## Architecture
 
 Agent-only demo: a VM-side JSON API in front of the real headless EmptyEpsilon
 engine, and a drive-side loop that observes the ship and relays bounded intents.
@@ -53,11 +98,14 @@ controllers (rule-based, not LLM) and serves two listeners:
 
 ```
 RULE_CONTROLLERS=off \
-EE_API_URL=http://127.0.0.1:8790 \
+EE_API_URL=https://multihax-ee-20261003.style.dev \
 EE_API_TOKEN_FILE=/home/ubuntu/.multihax/vmapi.token \
 PUBLIC_PORT=3001 PUBLIC_HOST=0.0.0.0 \
 node --experimental-transform-types src/real/main.ts
 ```
+
+`EE_API_URL` above is the public HTTPS route to the VM API.
+`http://127.0.0.1:8790` applies only when the VM API is reached through a tunnel.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
