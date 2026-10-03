@@ -17,6 +17,11 @@ export const ENGINEERING_ACTOR_ID = "agent-eng";
 export const DEFAULT_TICK_MS = 2000;
 export const MAX_INTENTS_PER_MINUTE = 10;
 export const RATE_WINDOW_MS = 60000;
+export const EXTERNAL_INTENTS_PER_MINUTE = 10;
+export const DECISION_HISTORY_LIMIT = 20;
+export const MAX_AGENT_LABEL_LENGTH = 40;
+export const RULE_CONTROLLERS_DEFAULT = "helms,engineering";
+export const RULE_CONTROLLERS_OFF = "off";
 export const CRUISE_IMPULSE = 0.5;
 export const WAYPOINT_ARRIVAL_UNITS = 500;
 export const DEFAULT_TARGET_HEADING = 90;
@@ -27,8 +32,99 @@ export const COOLANT_MINIMUM = 2.0;
 export const HEAT_LIMIT = 0.8;
 export const COOLANT_SYSTEMS = ["impulse", "reactor"] as const;
 export const CONTROLLER_LABEL = "deterministic controller (rule-based, not LLM)";
+export const EXTERNAL_ROLE_AGENT_LABEL = "external role agent";
+export const RULE_ROLES = ["helms", "engineering"] as const;
+
+export type ControllerOwner =
+  | "deterministic controller (rule-based, not LLM)"
+  | "external role agent";
+
+export function ownerLabel(enabled: boolean): ControllerOwner {
+  return enabled ? "deterministic controller (rule-based, not LLM)" : "external role agent";
+}
+
+export function parseRuleControllers(raw: string | undefined): SeatRole[] | null {
+  const value = (raw ?? RULE_CONTROLLERS_DEFAULT).trim().toLowerCase();
+  if (value.length === 0 || value === RULE_CONTROLLERS_OFF) {
+    return null;
+  }
+  const selected: SeatRole[] = [];
+  for (const part of value.split(",")) {
+    const token = part.trim();
+    if ((RULE_ROLES as readonly string[]).includes(token)) {
+      const role = token as SeatRole;
+      if (!selected.includes(role)) {
+        selected.push(role);
+      }
+    }
+  }
+  return selected;
+}
+
+export function normalizeAgentLabel(
+  value: unknown,
+): { ok: true; label: string | null } | { ok: false; detail: string } {
+  if (value === undefined || value === null) {
+    return { ok: true, label: null };
+  }
+  if (typeof value !== "string") {
+    return { ok: false, detail: "agent_label must be a string when present" };
+  }
+  if (value.length > MAX_AGENT_LABEL_LENGTH) {
+    return {
+      ok: false,
+      detail: `agent_label must be at most ${String(MAX_AGENT_LABEL_LENGTH)} characters`,
+    };
+  }
+  return { ok: true, label: value };
+}
 
 export type Waypoint = { x: number; y: number };
+
+export type RoleDecisionRecord = {
+  at: string;
+  kind: "deterministic_controller" | "external_role_agent";
+  role: SeatRole;
+  agent: string;
+  agent_label: string | null;
+  request_id: string;
+  intent: string;
+  args: Record<string, unknown>;
+  outcome: string;
+  result: VmCommandSummary | null;
+  note: string;
+};
+
+export class RoleDecisionLog {
+  private readonly entries: RoleDecisionRecord[] = [];
+
+  constructor(readonly limit: number = DECISION_HISTORY_LIMIT) {}
+
+  push(record: RoleDecisionRecord): void {
+    this.entries.push(record);
+    while (this.entries.length > this.limit) {
+      this.entries.shift();
+    }
+  }
+
+  list(): RoleDecisionRecord[] {
+    return this.entries.slice();
+  }
+
+  size(): number {
+    return this.entries.length;
+  }
+}
+
+export function mergeRoleDecisions(
+  deterministic: readonly RoleDecisionRecord[],
+  external: readonly RoleDecisionRecord[],
+  limit: number = DECISION_HISTORY_LIMIT,
+): RoleDecisionRecord[] {
+  const merged = deterministic.concat(external);
+  merged.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
+  return merged.slice(0, limit);
+}
 
 export type IntentPlan = {
   intent: IntentName;
@@ -60,9 +156,12 @@ export type AgentStatus = {
   agent: string;
   kind: "deterministic_controller";
   label: string;
+  owner: ControllerOwner;
+  enabled: boolean;
   role: SeatRole;
   actor_id: string;
   decisions: number;
+  ticks_disabled: number;
   intents_submitted: number;
   rate_limited: number;
   window_used: number;
@@ -166,6 +265,7 @@ export type AgentOptions = {
   client: CommandClient;
   planner: (observation: Observation) => IntentPlan[];
   seat: SeatLookup;
+  enabled?: boolean;
   rateLimit?: number;
   rateWindowMs?: number;
   log?: (line: string) => void;
@@ -174,13 +274,16 @@ export type AgentOptions = {
 export class BoundedAgent {
   readonly actorId: string;
   readonly role: SeatRole;
+  readonly enabled: boolean;
   private readonly client: CommandClient;
   private readonly planner: (observation: Observation) => IntentPlan[];
   private readonly seat: SeatLookup;
   private readonly limiter: RateLimiter;
   private readonly emit: (line: string) => void;
+  readonly history: RoleDecisionLog = new RoleDecisionLog();
   private requestSeq = 0;
   private decisionCount = 0;
+  private disabledTicks = 0;
   private submitted = 0;
   private limited = 0;
   private last: AgentDecision | null = null;
@@ -188,6 +291,7 @@ export class BoundedAgent {
   constructor(options: AgentOptions) {
     this.actorId = options.actorId;
     this.role = options.role;
+    this.enabled = options.enabled ?? true;
     this.client = options.client;
     this.planner = options.planner;
     this.seat = options.seat;
@@ -196,6 +300,10 @@ export class BoundedAgent {
       options.rateWindowMs ?? RATE_WINDOW_MS,
     );
     this.emit = options.log ?? ((line: string) => process.stdout.write(`${line}\n`));
+  }
+
+  get owner(): ControllerOwner {
+    return ownerLabel(this.enabled);
   }
 
   get lastDecision(): AgentDecision | null {
@@ -220,9 +328,12 @@ export class BoundedAgent {
       agent: this.actorId,
       kind: "deterministic_controller",
       label: CONTROLLER_LABEL,
+      owner: this.owner,
+      enabled: this.enabled,
       role: this.role,
       actor_id: this.actorId,
       decisions: this.decisionCount,
+      ticks_disabled: this.disabledTicks,
       intents_submitted: this.submitted,
       rate_limited: this.limited,
       window_used: this.limiter.used(),
@@ -239,6 +350,21 @@ export class BoundedAgent {
   private write(decision: AgentDecision): void {
     this.last = decision;
     this.decisionCount += 1;
+    for (const entry of decision.intents) {
+      this.history.push({
+        at: decision.at,
+        kind: "deterministic_controller",
+        role: this.role,
+        agent: this.actorId,
+        agent_label: null,
+        request_id: entry.request_id,
+        intent: entry.intent,
+        args: entry.args,
+        outcome: entry.result?.outcome ?? "not_submitted",
+        result: entry.result,
+        note: decision.note,
+      });
+    }
     this.emit(JSON.stringify(decision));
   }
 
@@ -246,7 +372,11 @@ export class BoundedAgent {
     observation: Observation,
     observationSeq: number,
     tickIndex: number,
-  ): Promise<AgentDecision> {
+  ): Promise<AgentDecision | null> {
+    if (!this.enabled) {
+      this.disabledTicks += 1;
+      return null;
+    }
     const now = Date.now();
     this.limiter.prune(now);
     const seat = this.seat(this.role);

@@ -16,3 +16,5 @@ Bead: multihax-xbi (coordinator arc-bhgx). Agent-only first demo: stock scenario
   verify: curl -s http://127.0.0.1:3000/state
 - [x] VM-side bounded JSON API with bearer token in front of loopback /exec.lua (src/vmapi/server.ts)
 - [x] Drive agents and spectator use VmApiPort over HTTPS; external role agents can POST /api/intent
+- [x] RULE_CONTROLLERS switch so real role agents own helms and engineering via POST /api/intent
+- [x] EE_API_TOKEN_FILE secret-file support

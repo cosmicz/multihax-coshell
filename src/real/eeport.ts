@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { INTENT_NAMES } from "../gateway/intents.ts";
 import { isRecord, type ExecResponse } from "../gateway/types.ts";
 import { observationFailure, parseObservationBody } from "./observe.ts";
@@ -10,6 +11,7 @@ export const ALLOWED_LOOPBACK_HOSTS = ["127.0.0.1", "localhost"] as const;
 export const EXEC_LUA_PATH = "/exec.lua";
 export const DEFAULT_VMAPI_URL = "http://127.0.0.1:8790";
 export const DEFAULT_VMAPI_TIMEOUT_MS = 3000;
+export const MIN_API_TOKEN_LENGTH = 16;
 export const VM_COMMAND_ROLES = ["helms", "engineering"] as const;
 export type VmCommandRole = (typeof VM_COMMAND_ROLES)[number];
 export const FIXED_ACTOR_IDS: Readonly<Record<VmCommandRole, string>> = {
@@ -270,6 +272,51 @@ export function validateApiUrl(raw: string): URL {
   );
 }
 
+export type ApiTokenSource = {
+  token: string;
+  from: "file" | "environment";
+};
+
+export function readApiTokenFromFile(path: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new Error(
+      "EE_API_TOKEN_FILE could not be read; check that the path exists and is readable",
+    );
+  }
+  const token = raw.trim();
+  if (token.length === 0) {
+    throw new Error("EE_API_TOKEN_FILE is empty; write the vm api token into it");
+  }
+  if (token.length < MIN_API_TOKEN_LENGTH) {
+    throw new Error(
+      `EE_API_TOKEN_FILE must hold at least ${String(MIN_API_TOKEN_LENGTH)} characters`,
+    );
+  }
+  return token;
+}
+
+export function resolveApiToken(env: NodeJS.ProcessEnv): ApiTokenSource {
+  const path = env["EE_API_TOKEN_FILE"];
+  if (typeof path === "string" && path.trim().length > 0) {
+    return { token: readApiTokenFromFile(path.trim()), from: "file" };
+  }
+  const token = (env["EE_API_TOKEN"] ?? "").trim();
+  if (token.length === 0) {
+    throw new TypeError(
+      "EE_API_TOKEN or EE_API_TOKEN_FILE is required; the drive never talks to /exec.lua",
+    );
+  }
+  if (token.length < MIN_API_TOKEN_LENGTH) {
+    throw new TypeError(
+      `EE_API_TOKEN must be at least ${String(MIN_API_TOKEN_LENGTH)} characters`,
+    );
+  }
+  return { token, from: "environment" };
+}
+
 type RawResponse = {
   at: number;
   http_status: number;
@@ -312,19 +359,25 @@ function summarizeCommandJson(
 
 export class VmApiPort {
   readonly baseUrl: string;
-  readonly token: string;
   readonly timeoutMs: number;
   calls = 0;
+  readonly #token: string;
 
   constructor(options: VmApiPortOptions) {
     if (typeof options?.token !== "string" || options.token.trim().length === 0) {
-      throw new TypeError("EE_API_TOKEN is required for the vm api client");
+      throw new TypeError("EE_API_TOKEN or EE_API_TOKEN_FILE is required for the vm api client");
+    }
+    const token = options.token.trim();
+    if (token.length < MIN_API_TOKEN_LENGTH) {
+      throw new TypeError(
+        `the vm api token must be at least ${String(MIN_API_TOKEN_LENGTH)} characters`,
+      );
     }
     const timeoutMs = options.timeout_ms ?? DEFAULT_VMAPI_TIMEOUT_MS;
     if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new TypeError(`invalid timeout_ms: ${String(timeoutMs)}`);
     }
-    this.token = options.token.trim();
+    this.#token = token;
     this.timeoutMs = timeoutMs;
     this.baseUrl = validateApiUrl(options.url ?? DEFAULT_VMAPI_URL)
       .toString()
@@ -337,7 +390,7 @@ export class VmApiPort {
   ): Promise<RawResponse> {
     this.calls += 1;
     const headers: Record<string, string> = {
-      authorization: `Bearer ${this.token}`,
+      authorization: `Bearer ${this.#token}`,
       accept: "application/json",
     };
     if (init.body !== undefined) {

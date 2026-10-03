@@ -6,22 +6,38 @@ import {
   DEFAULT_VMAPI_TIMEOUT_MS,
   DEFAULT_VMAPI_URL,
   FIXED_ACTOR_IDS,
+  MAX_INTENTS_PER_MINUTE,
   VmApiPort,
   isLuaFieldKey,
   isVmCommandRole,
+  resolveApiToken,
 } from "./eeport.ts";
 import type { VmCommandRole, VmCommandSummary, VmHealth, VmSeatInfo } from "./eeport.ts";
 import {
   CONTROLLER_LABEL,
+  DECISION_HISTORY_LIMIT,
   DEFAULT_TARGET_HEADING,
   ENGINEERING_ACTOR_ID,
+  EXTERNAL_INTENTS_PER_MINUTE,
   HELM_ACTOR_ID,
+  MAX_AGENT_LABEL_LENGTH,
   MAX_INTENTS_PER_MINUTE,
+  RateLimiter,
+  RoleDecisionLog,
   createEngineeringAgent,
   createHelmAgent,
+  mergeRoleDecisions,
+  normalizeAgentLabel,
+  ownerLabel,
+  parseRuleControllers,
   seatFromVmSeats,
 } from "./agents.ts";
-import type { AgentDecision, BoundedAgent, Waypoint } from "./agents.ts";
+import type {
+  AgentDecision,
+  BoundedAgent,
+  RoleDecisionRecord,
+  Waypoint,
+} from "./agents.ts";
 import { observationFailure } from "./observe.ts";
 import type { Observation, ObservationResult } from "./observe.ts";
 
@@ -35,15 +51,28 @@ export const TAGLINE =
 export type DriveOptions = {
   apiUrl: string;
   apiToken: string;
+  apiTokenSource: "file" | "environment";
   apiTimeoutMs: number;
   spectatorHost: string;
   spectatorPort: number;
   tickMs: number;
   rateLimit: number;
+  ruleControllers: SeatRole[] | null;
   waypoint: Waypoint | null;
   defaultHeading: number;
   logLimit: number;
   expectedShip: string | null;
+};
+
+export type ExternalRoleState = {
+  requests: number;
+  accepted: number;
+  refused: number;
+  failed: number;
+  rate_limited: number;
+  last_request_id: string | null;
+  last_at: string | null;
+  last_agent_label: string | null;
 };
 
 export type DecisionLogEntry = AgentDecision & { kind: "deterministic_controller" };
@@ -77,14 +106,9 @@ export type DriveState = {
     last_duration_ms: number | null;
     failures: number;
   };
-  external: {
-    requests: number;
-    accepted: number;
-    refused: number;
-    failed: number;
-    last_request_id: string | null;
-    last_at: string | null;
-  };
+  external: Record<VmCommandRole, ExternalRoleState>;
+  externalLogs: Record<VmCommandRole, RoleDecisionLog>;
+  externalLimiters: Record<VmCommandRole, RateLimiter>;
 };
 
 function numEnv(name: string, fallback: number): number {
@@ -116,24 +140,30 @@ function optionalNumber(name: string): number | null {
 export function loadDriveOptions(): DriveOptions {
   const waypointX = optionalNumber("WAYPOINT_X");
   const waypointY = optionalNumber("WAYPOINT_Y");
-  const token = strEnv("EE_API_TOKEN", "");
-  if (token.length === 0) {
-    throw new TypeError("EE_API_TOKEN is required; the drive never talks to /exec.lua");
-  }
+  const secret = resolveApiToken(process.env);
   return {
     apiUrl: strEnv("EE_API_URL", DEFAULT_VMAPI_URL),
-    apiToken: token,
+    apiToken: secret.token,
+    apiTokenSource: secret.from,
     apiTimeoutMs: numEnv("EE_API_TIMEOUT_MS", DEFAULT_VMAPI_TIMEOUT_MS),
     spectatorHost: strEnv("SPECTATOR_HOST", DEFAULT_SPECTATOR_HOST),
     spectatorPort: numEnv("PORT", DEFAULT_SPECTATOR_PORT),
     tickMs: numEnv("TICK_MS", 2000),
     rateLimit: numEnv("RATE_LIMIT", MAX_INTENTS_PER_MINUTE),
+    ruleControllers: parseRuleControllers(process.env["RULE_CONTROLLERS"]),
     waypoint:
       waypointX !== null && waypointY !== null ? { x: waypointX, y: waypointY } : null,
     defaultHeading: numEnv("HEADING_DEG", DEFAULT_TARGET_HEADING),
     logLimit: numEnv("LOG_LIMIT", DEFAULT_LOG_LIMIT),
     expectedShip: strEnv("SHIP_CALLSIGN", "").length > 0 ? strEnv("SHIP_CALLSIGN", "") : null,
   };
+}
+
+export function ruleControllerEnabled(
+  options: DriveOptions,
+  role: SeatRole,
+): boolean {
+  return options.ruleControllers !== null && options.ruleControllers.includes(role);
 }
 
 function logLine(payload: Record<string, unknown>): void {
@@ -162,6 +192,44 @@ function agentPayload(state: DriveState, agent: BoundedAgent): Record<string, un
   };
 }
 
+function externalTotals(state: DriveState): Record<string, number> {
+  const totals = { requests: 0, accepted: 0, refused: 0, failed: 0, rate_limited: 0 };
+  for (const role of ["helms", "engineering"] as const) {
+    const entry = state.external[role];
+    totals.requests += entry.requests;
+    totals.accepted += entry.accepted;
+    totals.refused += entry.refused;
+    totals.failed += entry.failed;
+    totals.rate_limited += entry.rate_limited;
+  }
+  return totals;
+}
+
+function roleAgent(state: DriveState, role: VmCommandRole): BoundedAgent {
+  return role === "helms" ? state.agents.helm : state.agents.engineering;
+}
+
+export function rolePayload(state: DriveState, role: VmCommandRole): Record<string, unknown> {
+  const agent = roleAgent(state, role);
+  const limiter = state.externalLimiters[role];
+  return {
+    role,
+    owner: agent.owner,
+    rule_controller_enabled: agent.enabled,
+    rule_controller: agentPayload(state, agent),
+    external: {
+      ...state.external[role],
+      window_used: limiter.used(),
+      rate_limit: limiter.limit,
+    },
+    decisions: mergeRoleDecisions(
+      agent.history.list(),
+      state.externalLogs[role].list(),
+      DECISION_HISTORY_LIMIT,
+    ),
+  };
+}
+
 export function statePayload(state: DriveState): Record<string, unknown> {
   const now = Date.now();
   const observation: ObservationSnapshot = {
@@ -178,6 +246,7 @@ export function statePayload(state: DriveState): Record<string, unknown> {
     epoch: state.epoch,
     vm: {
       api_url: state.client.baseUrl,
+      token_source: state.options.apiTokenSource,
       timeout_ms: state.client.timeoutMs,
       calls: state.client.calls,
       reachable: state.vmHealth?.ok === true,
@@ -188,12 +257,21 @@ export function statePayload(state: DriveState): Record<string, unknown> {
       fixed_actors: { ...FIXED_ACTOR_IDS },
     },
     loop: { tick_ms: state.options.tickMs, ...state.tick },
+    rule_controllers: {
+      raw: process.env["RULE_CONTROLLERS"] ?? "helms,engineering",
+      enabled: state.options.ruleControllers ?? [],
+      all_off: state.options.ruleControllers === null,
+    },
     observation,
+    roles: {
+      helms: rolePayload(state, "helms"),
+      engineering: rolePayload(state, "engineering"),
+    },
     agents: {
       [HELM_ACTOR_ID]: agentPayload(state, state.agents.helm),
       [ENGINEERING_ACTOR_ID]: agentPayload(state, state.agents.engineering),
     },
-    external_intents: state.external,
+    external_intents: externalTotals(state),
     log: state.log,
   };
 }
@@ -230,6 +308,7 @@ const PAGE_SCRIPT = [
   "var logEl = document.getElementById('log');",
   "var statusEl = document.getElementById('status');",
   "var vmEl = document.getElementById('vm');",
+  "var ownersBody = document.getElementById('owners-body');",
   "function cell(node, value, cls) {",
   "  var td = document.createElement('td');",
   "  td.textContent = value === null || value === undefined ? '-' : String(value);",
@@ -269,14 +348,30 @@ const PAGE_SCRIPT = [
   "    systemsBody.appendChild(tr);",
   "  });",
   "}",
+  "function renderOwners(roles) {",
+  "  ownersBody.textContent = '';",
+  "  ['helms', 'engineering'].forEach(function (key) {",
+  "    var role = roles[key];",
+  "    var tr = document.createElement('tr');",
+  "    cell(tr, key);",
+  "    cell(tr, role.owner);",
+  "    cell(tr, role.rule_controller_enabled ? 'yes' : 'no');",
+  "    cell(tr, String(role.external.window_used) + '/' + String(role.external.rate_limit) + ' per minute');",
+  "    cell(tr, String(role.decisions.length) + ' recent');",
+  "    ownersBody.appendChild(tr);",
+  "  });",
+  "}",
   "function renderAgents(state) {",
   "  vmEl.textContent = 'vm api ' + state.vm.api_url + ' reachable=' + state.vm.reachable +",
-  "    ' calls=' + state.vm.calls + ' vm_seq=' + state.vm.observation_seq;",
+  "    ' calls=' + state.vm.calls + ' vm_seq=' + state.vm.observation_seq +",
+  "    ' RULE_CONTROLLERS=' + state.rule_controllers.raw;",
+  "  renderOwners(state.roles);",
   "  statusEl.textContent = Object.keys(state.agents).map(function (key) {",
   "    var a = state.agents[key];",
   "    var i = a.last_intent ? a.last_intent.intent + ' ' + JSON.stringify(a.last_intent.args) : 'no intent';",
   "    var r = a.last_result ? a.last_result.outcome + (a.last_result.code ? ':' + a.last_result.code : '') : 'no result';",
-  "    return key + ' [' + a.role + '] ' + i + ' -> ' + r + ' (' + a.window_used + '/' + a.rate_limit + ' per minute)';",
+  "    var state_ = a.enabled ? i + ' -> ' + r : 'disabled';",
+  "    return key + ' [' + a.role + '] ' + state_ + ' (' + a.window_used + '/' + a.rate_limit + ' per minute)';",
   "  }).join('   |   ');",
   "}",
   "function renderLog(entries) {",
@@ -337,6 +432,11 @@ export function renderSpectatorPage(controllerLabel: string): string {
     '<p class="sub" id="vm"></p>',
     '<p class="sub" id="status"></p>',
     "<main>",
+    '<section aria-labelledby="owners-heading"><h2 id="owners-heading">Role ownership</h2>',
+    "<table><thead><tr><th>role</th><th>owner</th><th>rule controller</th>",
+    "<th>external rate</th><th>decisions</th></tr></thead>",
+    '<tbody id="owners-body"></tbody></table>',
+    "</section>",
     '<section aria-labelledby="telemetry-heading"><h2 id="telemetry-heading">Ship telemetry</h2>',
     '<table id="telemetry"><tbody></tbody></table>',
     "<table><thead><tr><th>system</th><th>power</th><th>coolant</th><th>health</th><th>heat</th></tr></thead>",
@@ -438,7 +538,14 @@ function readJsonBody(request: IncomingMessage): Promise<JsonBody> {
 }
 
 type ExternalIntent =
-  | { ok: true; role: VmCommandRole; intent: string; args: Record<string, unknown>; request_id: string }
+  | {
+      ok: true;
+      role: VmCommandRole;
+      intent: string;
+      args: Record<string, unknown>;
+      request_id: string;
+      agent_label: string | null;
+    }
   | { ok: false; status: number; error: string; detail: string };
 
 export function parseExternalIntent(body: Record<string, unknown>): ExternalIntent {
@@ -464,6 +571,10 @@ export function parseExternalIntent(body: Record<string, unknown>): ExternalInte
       detail: "intent must be a string and args must be an object",
     };
   }
+  const label = normalizeAgentLabel(body["agent_label"]);
+  if (!label.ok) {
+    return { ok: false, status: 400, error: "INVALID_AGENT_LABEL", detail: label.detail };
+  }
   const classified = classifyIntent(intent, role);
   if (!classified.ok) {
     return {
@@ -488,6 +599,7 @@ export function parseExternalIntent(body: Record<string, unknown>): ExternalInte
     role,
     intent,
     args,
+    agent_label: label.label,
     request_id:
       typeof requestId === "string" && requestId.length > 0 && requestId.length <= 128
         ? requestId
@@ -529,9 +641,40 @@ export function createSpectatorServer(state: DriveState): Server {
           return;
         }
         const seat = seatLookup(state, parsed.role);
-        state.external.requests += 1;
-        state.external.last_request_id = parsed.request_id;
-        state.external.last_at = new Date().toISOString();
+        const external = state.external[parsed.role];
+        const limiter = state.externalLimiters[parsed.role];
+        external.requests += 1;
+        external.last_request_id = parsed.request_id;
+        external.last_at = new Date().toISOString();
+        external.last_agent_label = parsed.agent_label;
+        const now = Date.now();
+        if (!limiter.tryTake(now)) {
+          external.rate_limited += 1;
+          const record: RoleDecisionRecord = {
+            at: new Date(now).toISOString(),
+            kind: "external_role_agent",
+            role: parsed.role,
+            agent: FIXED_ACTOR_IDS[parsed.role],
+            agent_label: parsed.agent_label,
+            request_id: parsed.request_id,
+            intent: parsed.intent,
+            args: parsed.args,
+            outcome: "rate_limited",
+            result: null,
+            note: `external role agents are capped at ${String(limiter.limit)} intents per ${String(
+              limiter.windowMs,
+            )}ms for ${parsed.role}`,
+          };
+          state.externalLogs[parsed.role].push(record);
+          logLine({ ...record, kind: "external_role_agent" });
+          sendJson(response, 429, {
+            ok: false,
+            error: "RATE_LIMITED",
+            detail: record.note,
+            result: null,
+          });
+          return;
+        }
         void state.client
           .command({
             role: parsed.role,
@@ -543,22 +686,39 @@ export function createSpectatorServer(state: DriveState): Server {
           })
           .then((outcome) => {
             if (outcome.summary.outcome === "accepted") {
-              state.external.accepted += 1;
+              external.accepted += 1;
             } else if (outcome.summary.outcome === "refused") {
-              state.external.refused += 1;
+              external.refused += 1;
             } else {
-              state.external.failed += 1;
+              external.failed += 1;
             }
-            logLine({
+            const record: RoleDecisionRecord = {
               at: new Date(outcome.at).toISOString(),
-              kind: "external_intent",
-              actor_id: FIXED_ACTOR_IDS[parsed.role],
+              kind: "external_role_agent",
               role: parsed.role,
+              agent: FIXED_ACTOR_IDS[parsed.role],
+              agent_label: parsed.agent_label,
               request_id: parsed.request_id,
               intent: parsed.intent,
+              args: parsed.args,
               outcome: outcome.summary.outcome,
+              result: outcome.summary,
+              note: outcome.detail,
+            };
+            state.externalLogs[parsed.role].push(record);
+            logLine({
+              at: record.at,
+              kind: "external_role_agent",
+              role: record.role,
+              actor_id: record.agent,
+              agent_label: record.agent_label,
+              request_id: record.request_id,
+              intent: record.intent,
+              args: record.args,
+              outcome: record.outcome,
               code: outcome.summary.code,
               reason: outcome.summary.reason,
+              note: record.note,
             });
             const status = outcome.summary.outcome === "accepted"
               ? 200
@@ -570,11 +730,26 @@ export function createSpectatorServer(state: DriveState): Server {
             sendJson(response, status, { ok: outcome.ok, result: outcome.summary });
           })
           .catch((error: unknown) => {
-            state.external.failed += 1;
+            external.failed += 1;
+            const record: RoleDecisionRecord = {
+              at: new Date().toISOString(),
+              kind: "external_role_agent",
+              role: parsed.role,
+              agent: FIXED_ACTOR_IDS[parsed.role],
+              agent_label: parsed.agent_label,
+              request_id: parsed.request_id,
+              intent: parsed.intent,
+              args: parsed.args,
+              outcome: "vm_api_unreachable",
+              result: null,
+              note: error instanceof Error ? error.message : String(error),
+            };
+            state.externalLogs[parsed.role].push(record);
+            logLine({ ...record, kind: "external_role_agent" });
             sendJson(response, 502, {
               ok: false,
               error: "VM_API_UNREACHABLE",
-              detail: error instanceof Error ? error.message : String(error),
+              detail: record.note,
             });
           });
       });
@@ -630,6 +805,16 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
       logLine({ kind: "log_parse_failed", line });
     }
   };
+  const emptyExternal = (): ExternalRoleState => ({
+    requests: 0,
+    accepted: 0,
+    refused: 0,
+    failed: 0,
+    rate_limited: 0,
+    last_request_id: null,
+    last_at: null,
+    last_agent_label: null,
+  });
   const state: DriveState = {
     options,
     client,
@@ -648,6 +833,7 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
       helm: createHelmAgent({
         client,
         seat: (role) => seatLookup(state, role),
+        enabled: ruleControllerEnabled(options, "helms"),
         rateLimit: options.rateLimit,
         log: recordDecision,
         waypoint: options.waypoint,
@@ -656,6 +842,7 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
       engineering: createEngineeringAgent({
         client,
         seat: (role) => seatLookup(state, role),
+        enabled: ruleControllerEnabled(options, "engineering"),
         rateLimit: options.rateLimit,
         log: recordDecision,
       }),
@@ -668,15 +855,22 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
       last_duration_ms: null,
       failures: 0,
     },
-    external: {
-      requests: 0,
-      accepted: 0,
-      refused: 0,
-      failed: 0,
-      last_request_id: null,
-      last_at: null,
+    external: { helms: emptyExternal(), engineering: emptyExternal() },
+    externalLogs: { helms: new RoleDecisionLog(), engineering: new RoleDecisionLog() },
+    externalLimiters: {
+      helms: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
+      engineering: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
     },
   };
+  logLine({
+    at: new Date().toISOString(),
+    kind: "rule_controllers",
+    raw: process.env["RULE_CONTROLLERS"] ?? "helms,engineering",
+    helms: ownerLabel(ruleControllerEnabled(options, "helms")),
+    engineering: ownerLabel(ruleControllerEnabled(options, "engineering")),
+    external_intents_per_minute: EXTERNAL_INTENTS_PER_MINUTE,
+    max_agent_label_length: MAX_AGENT_LABEL_LENGTH,
+  });
 
   const server = createSpectatorServer(state);
   await new Promise<void>((resolve, reject) => {
@@ -694,6 +888,7 @@ export async function runDrive(options: DriveOptions): Promise<Server> {
     kind: "listening",
     url: `http://${options.spectatorHost}:${String(boundPort)}/`,
     vm_api: client.baseUrl,
+    vm_token_source: options.apiTokenSource,
     ship: state.ship,
     epoch: state.epoch,
     controller_label: CONTROLLER_LABEL,
