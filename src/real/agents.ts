@@ -14,6 +14,7 @@ import type { Observation } from "./observe.ts";
 
 export const HELM_ACTOR_ID = "agent-helm";
 export const ENGINEERING_ACTOR_ID = "agent-eng";
+export const WEAPONS_ACTOR_ID = "agent-weapons";
 export const DEFAULT_TICK_MS = 2000;
 export const MAX_INTENTS_PER_MINUTE = 10;
 export const RATE_WINDOW_MS = 60000;
@@ -33,7 +34,7 @@ export const HEAT_LIMIT = 0.8;
 export const COOLANT_SYSTEMS = ["impulse", "reactor"] as const;
 export const CONTROLLER_LABEL = "deterministic controller (rule-based, not LLM)";
 export const EXTERNAL_ROLE_AGENT_LABEL = "external role agent";
-export const RULE_ROLES = ["helms", "engineering"] as const;
+export const RULE_ROLES = ["helms", "engineering", "weapons"] as const;
 
 export type ControllerOwner =
   | "deterministic controller (rule-based, not LLM)"

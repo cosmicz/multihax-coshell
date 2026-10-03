@@ -12,11 +12,12 @@ export const EXEC_LUA_PATH = "/exec.lua";
 export const DEFAULT_VMAPI_URL = "http://127.0.0.1:8790";
 export const DEFAULT_VMAPI_TIMEOUT_MS = 3000;
 export const MIN_API_TOKEN_LENGTH = 16;
-export const VM_COMMAND_ROLES = ["helms", "engineering"] as const;
+export const VM_COMMAND_ROLES = ["helms", "engineering", "weapons"] as const;
 export type VmCommandRole = (typeof VM_COMMAND_ROLES)[number];
 export const FIXED_ACTOR_IDS: Readonly<Record<VmCommandRole, string>> = {
   helms: "agent-helm",
   engineering: "agent-eng",
+  weapons: "agent-weapons",
 };
 export const LUA_REFUSAL_KEYS = ["lua", "script", "lua_body", "exec", "body"] as const;
 

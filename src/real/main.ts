@@ -77,6 +77,7 @@ export type DriveOptions = {
   tickMs: number;
   rateLimit: number;
   ruleControllers: SeatRole[] | null;
+  team: string;
   waypoint: Waypoint | null;
   defaultHeading: number;
   logLimit: number;
@@ -178,6 +179,7 @@ export function loadDriveOptions(): DriveOptions {
     tickMs: numEnv("TICK_MS", 2000),
     rateLimit: numEnv("RATE_LIMIT", MAX_INTENTS_PER_MINUTE),
     ruleControllers: parseRuleControllers(process.env["RULE_CONTROLLERS"]),
+    team: strEnv("TEAM", "unassigned"),
     waypoint:
       waypointX !== null && waypointY !== null ? { x: waypointX, y: waypointY } : null,
     defaultHeading: numEnv("HEADING_DEG", DEFAULT_TARGET_HEADING),
@@ -221,7 +223,7 @@ function agentPayload(state: DriveState, agent: BoundedAgent): Record<string, un
 
 function externalTotals(state: DriveState): Record<string, number> {
   const totals = { requests: 0, accepted: 0, refused: 0, failed: 0, rate_limited: 0 };
-  for (const role of ["helms", "engineering"] as const) {
+  for (const role of ["helms", "engineering", "weapons"] as const) {
     const entry = state.external[role];
     totals.requests += entry.requests;
     totals.accepted += entry.accepted;
@@ -232,8 +234,14 @@ function externalTotals(state: DriveState): Record<string, number> {
   return totals;
 }
 
-function roleAgent(state: DriveState, role: VmCommandRole): BoundedAgent {
-  return role === "helms" ? state.agents.helm : state.agents.engineering;
+function roleAgent(state: DriveState, role: VmCommandRole): BoundedAgent | null {
+  if (role === "helms") {
+    return state.agents.helm;
+  }
+  if (role === "engineering") {
+    return state.agents.engineering;
+  }
+  return null;
 }
 
 export function rolePayload(state: DriveState, role: VmCommandRole): Record<string, unknown> {
@@ -241,16 +249,16 @@ export function rolePayload(state: DriveState, role: VmCommandRole): Record<stri
   const limiter = state.externalLimiters[role];
   return {
     role,
-    owner: agent.owner,
-    rule_controller_enabled: agent.enabled,
-    rule_controller: agentPayload(state, agent),
+    owner: agent === null ? EXTERNAL_ROLE_AGENT_LABEL : agent.owner,
+    rule_controller_enabled: agent !== null && agent.enabled,
+    rule_controller: agent === null ? null : agentPayload(state, agent),
     external: {
       ...state.external[role],
       window_used: limiter.used(),
       rate_limit: limiter.limit,
     },
     decisions: mergeRoleDecisions(
-      agent.history.list(),
+      agent === null ? [] : agent.history.list(),
       state.externalLogs[role].list(),
       DECISION_HISTORY_LIMIT,
     ),
@@ -258,17 +266,17 @@ export function rolePayload(state: DriveState, role: VmCommandRole): Record<stri
 }
 
 export function topLevelControllerLabel(state: DriveState): string {
-  const helms = roleAgent(state, "helms").owner;
-  const engineering = roleAgent(state, "engineering").owner;
-  const helmExternal = helms === EXTERNAL_ROLE_AGENT_LABEL;
-  const engineeringExternal = engineering === EXTERNAL_ROLE_AGENT_LABEL;
-  if (helmExternal && engineeringExternal) {
-    return "LLM role agents (external, via POST /api/intent) control helms and engineering; rule-based controllers off";
+  const owners = (["helms", "engineering", "weapons"] as const).map(
+    (role) => `${role}: ${rolePayload(state, role)["owner"] as string}`,
+  );
+  const allExternal = owners.every((entry) => entry.endsWith(EXTERNAL_ROLE_AGENT_LABEL));
+  if (allExternal) {
+    return "LLM role agents (external, via POST /api/intent) control helms, engineering and weapons; rule-based controllers off";
   }
-  if (!helmExternal && !engineeringExternal) {
+  if (state.options.ruleControllers !== null && state.options.ruleControllers.length === 3) {
     return "deterministic controllers (rule-based, not LLM) control helms and engineering";
   }
-  return `helms: ${helms}; engineering: ${engineering}`;
+  return owners.join("; ");
 }
 
 export function statePayload(state: DriveState): Record<string, unknown> {
@@ -283,6 +291,7 @@ export function statePayload(state: DriveState): Record<string, unknown> {
     started_at: new Date(state.startedAt).toISOString(),
     uptime_ms: now - state.startedAt,
     controller_label: topLevelControllerLabel(state),
+    team: state.options.team,
     ship: state.ship,
     epoch: state.epoch,
     vm: {
@@ -307,6 +316,7 @@ export function statePayload(state: DriveState): Record<string, unknown> {
     roles: {
       helms: rolePayload(state, "helms"),
       engineering: rolePayload(state, "engineering"),
+      weapons: rolePayload(state, "weapons"),
     },
     agents: {
       [HELM_ACTOR_ID]: agentPayload(state, state.agents.helm),
@@ -379,6 +389,12 @@ const PAGE_SCRIPT = [
   "  telemetry.appendChild(row('impulse level', fixed(s.impulse_level, 2)));",
   "  telemetry.appendChild(row('impulse request', fixed(s.impulse_request, 2)));",
   "  telemetry.appendChild(row('energy', fixed(s.energy_level, 1) + ' / ' + fixed(s.energy_max, 1)));",
+  "  telemetry.appendChild(row('faction', s.faction));",
+  "  telemetry.appendChild(row('hull', fixed(s.hull_level, 1) + ' / ' + fixed(s.hull_max, 1)));",
+  "  telemetry.appendChild(row('shields', fixed(s.shield_level, 1) + ' / ' + fixed(s.shield_max, 1)));",
+  "  var enemy = s.other_ship;",
+  "  telemetry.appendChild(row('enemy', enemy ? enemy.callsign + ' (' + (enemy.faction || 'unknown') + ')' : 'none'));",
+  "  telemetry.appendChild(row('enemy distance', enemy ? fixed(enemy.distance, 1) : '-'));",
   "  systemsBody.textContent = '';",
   "  ['reactor', 'impulse', 'maneuver'].forEach(function (name) {",
   "    var sys = s.systems[name];",
@@ -393,7 +409,7 @@ const PAGE_SCRIPT = [
   "}",
   "function renderOwners(roles) {",
   "  ownersBody.textContent = '';",
-  "  ['helms', 'engineering'].forEach(function (key) {",
+  "  ['helms', 'engineering', 'weapons'].forEach(function (key) {",
   "    var role = roles[key];",
   "    var tr = document.createElement('tr');",
   "    cell(tr, key);",
@@ -408,7 +424,7 @@ const PAGE_SCRIPT = [
   "  vmEl.textContent = 'vm api reachable=' + state.vm.reachable +",
   "    ' calls=' + state.vm.calls + ' vm_seq=' + state.vm.observation_seq +",
   "    ' RULE_CONTROLLERS=' + state.rule_controllers.raw;",
-  "  labelEl.textContent = state.controller_label;",
+  "  labelEl.textContent = state.controller_label + '  \\u00b7  team: ' + state.team;",
   "  renderOwners(state.roles);",
   "  statusEl.textContent = Object.keys(state.agents).map(function (key) {",
   "    var a = state.agents[key];",
@@ -471,7 +487,7 @@ export function renderSpectatorPage(state: DriveState): string {
     "</head>",
     "<body>",
     "<h1>Agent-only EmptyEpsilon demo</h1>",
-    `<p class="label" id="controller-label">${topLevelControllerLabel(state)}</p>`,
+    `<p class="label" id="controller-label">${topLevelControllerLabel(state)} · team: ${state.options.team}</p>`,
     `<p class="notice" role="status">${TAGLINE}</p>`,
     '<p class="sub" id="vm"></p>',
     '<p class="sub" id="status"></p>',
@@ -640,7 +656,7 @@ export function parseExternalIntent(body: Record<string, unknown>): ExternalInte
   }
   const role = body["role"];
   if (!isVmCommandRole(role)) {
-    return { ok: false, status: 400, error: "INVALID_ROLE", detail: "role must be helms or engineering" };
+    return { ok: false, status: 400, error: "INVALID_ROLE", detail: "role must be helms, engineering or weapons" };
   }
   const intent = body["intent"];
   const args = body["args"];
@@ -969,11 +985,16 @@ export async function runDrive(options: DriveOptions): Promise<{
       last_duration_ms: null,
       failures: 0,
     },
-    external: { helms: emptyExternal(), engineering: emptyExternal() },
-    externalLogs: { helms: new RoleDecisionLog(), engineering: new RoleDecisionLog() },
+    external: { helms: emptyExternal(), engineering: emptyExternal(), weapons: emptyExternal() },
+    externalLogs: {
+      helms: new RoleDecisionLog(),
+      engineering: new RoleDecisionLog(),
+      weapons: new RoleDecisionLog(),
+    },
     externalLimiters: {
       helms: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
       engineering: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
+      weapons: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
     },
   };
   logLine({

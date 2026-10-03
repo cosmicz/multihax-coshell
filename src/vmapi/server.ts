@@ -16,16 +16,14 @@ import {
   isLoopbackHost,
   isVmCommandRole,
 } from "../real/eeport.ts";
-import { ENGINEERING_ACTOR_ID, HELM_ACTOR_ID } from "../real/agents.ts";
-import { OBSERVATION_LUA, observeOnce } from "../real/observe.ts";
+import { ENGINEERING_ACTOR_ID, HELM_ACTOR_ID, WEAPONS_ACTOR_ID } from "../real/agents.ts";
+import { buildObservationLua, observeOnce } from "../real/observe.ts";
 import type { Observation } from "../real/observe.ts";
 
 export const DEFAULT_VMAPI_PORT = 8790;
 export const DEFAULT_VMAPI_HOST = "127.0.0.1";
 export const MAX_BODY_BYTES = 8 * 1024;
 export const DEFAULT_VM_EPOCH = 1;
-export const DEFAULT_BIND_RETRIES = 30;
-export const DEFAULT_BIND_RETRY_MS = 1000;
 export const AUTHORIZATION_PREFIX = "bearer ";
 
 export type VmApiOptions = {
@@ -35,10 +33,8 @@ export type VmApiOptions = {
   eeHost: string;
   eePort: number;
   eeTimeoutMs: number;
-  shipCallsign: string | null;
+  shipCallsign: string;
   epoch: number;
-  bindRetries: number;
-  bindRetryMs: number;
 };
 
 export type CommandBody = {
@@ -111,7 +107,10 @@ export function loadVmApiOptions(): VmApiOptions {
   }
   const engine = parseEngineHttp(strEnv("EE_HTTP", "http://127.0.0.1:8080"));
   const ship = strEnv("SHIP_CALLSIGN", "");
-  if (ship.length > 0 && !CALLSIGN_PATTERN.test(ship)) {
+  if (ship.length === 0) {
+    throw new TypeError("SHIP_CALLSIGN is required; there is no first-observation binding");
+  }
+  if (!CALLSIGN_PATTERN.test(ship)) {
     throw new TypeError(`SHIP_CALLSIGN is not a usable callsign: ${ship}`);
   }
   return {
@@ -121,10 +120,8 @@ export function loadVmApiOptions(): VmApiOptions {
     eeHost: engine.host,
     eePort: engine.port,
     eeTimeoutMs: numEnv("EE_TIMEOUT_MS", DEFAULT_EE_TIMEOUT_MS),
-    shipCallsign: ship.length > 0 ? ship : null,
+    shipCallsign: ship,
     epoch: numEnv("EPOCH", DEFAULT_VM_EPOCH),
-    bindRetries: numEnv("BIND_RETRIES", DEFAULT_BIND_RETRIES),
-    bindRetryMs: numEnv("BIND_RETRY_MS", DEFAULT_BIND_RETRY_MS),
   };
 }
 
@@ -300,7 +297,7 @@ function countEvent(
 
 export function seatViews(state: VmState): SeatView[] {
   const views: SeatView[] = [];
-  for (const role of ["helms", "engineering"] as const) {
+  for (const role of ["helms", "engineering", "weapons"] as const) {
     const view = state.gateway.seat({
       epoch: state.options.epoch,
       ship: state.ship,
@@ -330,14 +327,17 @@ export function healthPayload(state: VmState): Record<string, unknown> {
   };
 }
 
-async function observeFromEngine(port: EeExecLuaPort): Promise<{
+async function observeFromEngine(
+  port: EeExecLuaPort,
+  callsign: string,
+): Promise<{
   observation: Observation | null;
   seq: number;
   at: string;
   code: string | null;
   detail: string;
 }> {
-  const tick = await observeOnce(port);
+  const tick = await observeOnce(port, callsign);
   const at = new Date(tick.at).toISOString();
   if (!tick.result.ok) {
     return {
@@ -381,7 +381,7 @@ export function createVmApiServer(state: VmState): Server {
       return;
     }
     if (method === "GET" && pathname === "/v1/observe") {
-      void observeFromEngine(state.port).then((outcome) => {
+      void observeFromEngine(state.port, state.ship).then((outcome) => {
         state.lastObservationAt = outcome.at;
         state.lastObservationCode = outcome.code;
         if (outcome.observation === null) {
@@ -508,11 +508,19 @@ const INTENT_EXAMPLES: ReadonlyArray<{
     role: "engineering",
     args: { system: "impulse", level: 2 },
   },
+  {
+    intent: "target_ship",
+    role: "weapons",
+    args: { callsign: "Crusader Naa'Tvek" },
+  },
 ];
 
-export function printScripts(callsign: string): string {
+export function printScripts(callsign: string, enemyCallsign: string): string {
   const sections: string[] = [];
-  sections.push("== observation (fixed, POSTed verbatim to loopback /exec.lua) ==", OBSERVATION_LUA);
+  sections.push(
+    "== observation (built for the bound callsign, POSTed verbatim to loopback /exec.lua) ==",
+    buildObservationLua(callsign),
+  );
   sections.push(`== command templates for callsign ${callsign} ==`);
   for (const example of INTENT_EXAMPLES) {
     const validated = validateIntentArgs(example.intent, example.args);
@@ -525,63 +533,10 @@ export function printScripts(callsign: string): string {
     );
   }
   sections.push(`== intent count: ${String(INTENT_NAMES.length)} ==`);
+  sections.push(
+    `== weapons example needs an enemy player ship; ENEMY_CALLSIGN=${enemyCallsign} ==`,
+  );
   return sections.join("\n\n");
-}
-
-async function bindShip(
-  port: EeExecLuaPort,
-  options: VmApiOptions,
-): Promise<{ callsign: string; observationSeq: number; lastObservationAt: string | null }> {
-  if (options.shipCallsign) {
-    logLine({
-      at: new Date().toISOString(),
-      kind: "bind",
-      callsign: options.shipCallsign,
-      source: "SHIP_CALLSIGN",
-    });
-    return {
-      callsign: options.shipCallsign,
-      observationSeq: 0,
-      lastObservationAt: null,
-    };
-  }
-  for (let attempt = 1; attempt <= Math.max(1, options.bindRetries); attempt += 1) {
-    const outcome = await observeFromEngine(port);
-    if (outcome.observation !== null) {
-      logLine({
-        at: outcome.at,
-        kind: "bind",
-        callsign: outcome.observation.callsign,
-        attempt,
-        source: "observation",
-      });
-      return {
-        callsign: outcome.observation.callsign,
-        observationSeq: outcome.seq,
-        lastObservationAt: outcome.at,
-      };
-    }
-    logLine({
-      at: outcome.at,
-      kind: "bind_failed",
-      attempt,
-      detail: outcome.detail,
-    });
-    if (attempt < options.bindRetries) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, Math.max(0, options.bindRetryMs));
-      });
-    }
-  }
-  const detail = `no player ship observed after ${String(options.bindRetries)} attempts at ${port.endpoint}`;
-  logLine({
-    at: new Date().toISOString(),
-    kind: "bind_gave_up",
-    attempts: options.bindRetries,
-    endpoint: port.endpoint,
-    detail,
-  });
-  throw new Error(detail);
 }
 
 export async function startVmApi(options: VmApiOptions): Promise<{ state: VmState; server: Server }> {
@@ -590,7 +545,17 @@ export async function startVmApi(options: VmApiOptions): Promise<{ state: VmStat
     port: options.eePort,
     timeout_ms: options.eeTimeoutMs,
   });
-  const bound = await bindShip(port, options);
+  const bound = {
+    callsign: options.shipCallsign,
+    observationSeq: 0,
+    lastObservationAt: null as string | null,
+  };
+  logLine({
+    at: new Date().toISOString(),
+    kind: "bind",
+    callsign: bound.callsign,
+    source: "SHIP_CALLSIGN",
+  });
   const gatewayEvents: Record<string, number> = {};
   const gateway = new RoleScopedGateway(
     {
@@ -603,8 +568,11 @@ export async function startVmApi(options: VmApiOptions): Promise<{ state: VmStat
     },
     port,
   );
-  for (const role of ["helms", "engineering"] as const) {
-    const actorId = role === "helms" ? HELM_ACTOR_ID : ENGINEERING_ACTOR_ID;
+  for (const [role, actorId] of [
+    ["helms", HELM_ACTOR_ID],
+    ["engineering", ENGINEERING_ACTOR_ID],
+    ["weapons", WEAPONS_ACTOR_ID],
+  ] as const) {
     const claim = gateway.claimAgent({ epoch: options.epoch, ship: bound.callsign, role }, actorId);
     if (!claim.ok) {
       throw new Error(`seat claim for ${actorId} failed: ${claim.code}`);
@@ -656,7 +624,9 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--print-scripts")) {
     const options = loadVmApiOptions();
-    process.stdout.write(`${printScripts(options.shipCallsign ?? "EXAMPLE-SHIP")}\n`);
+    process.stdout.write(
+      `${printScripts(options.shipCallsign, strEnv("ENEMY_CALLSIGN", "Crusader Naa'Tvek"))}\n`,
+    );
     return;
   }
   const options = loadVmApiOptions();

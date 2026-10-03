@@ -1,43 +1,108 @@
+import { isValidCallsign, luaString } from "../gateway/lua.ts";
 import type { EeExecResult, EeExecLuaPort } from "./eeport.ts";
 
-export const OBSERVATION_LUA = [
-  "local s = getPlayerShip(-1)",
-  'if s == nil then return toJSON({error="NO_PLAYER_SHIP"}) end',
-  "local x, y = s:getPosition()",
-  "local vx, vy = s:getVelocity()",
-  "local rot = s:getRotation()",
-  "local heading = s:getHeading()",
-  "local speed = math.sqrt(vx * vx + vy * vy)",
-  "local impulse_level = 0.0",
-  "local impulse_request = 0.0",
-  "local drive = s.components.impulse_engine",
-  "if drive ~= nil then",
-  "  impulse_level = drive.actual",
-  "  impulse_request = drive.request",
-  "end",
-  "return toJSON({",
-  "  callsign = s:getCallSign(),",
-  "  x = x,",
-  "  y = y,",
-  "  rotation = rot,",
-  "  heading = heading,",
-  "  velocity_x = vx,",
-  "  velocity_y = vy,",
-  "  speed = speed,",
-  "  impulse_level = impulse_level,",
-  "  impulse_request = impulse_request,",
-  "  energy_level = s:getEnergyLevel(),",
-  "  energy_max = s:getEnergyLevelMax(),",
-  "  systems = {",
-  '    reactor = { power = s:getSystemPower("reactor"), coolant = s:getSystemCoolant("reactor"),',
-  '      health = s:getSystemHealth("reactor"), heat = s:getSystemHeat("reactor") },',
-  '    impulse = { power = s:getSystemPower("impulse"), coolant = s:getSystemCoolant("impulse"),',
-  '      health = s:getSystemHealth("impulse"), heat = s:getSystemHeat("impulse") },',
-  '    maneuver = { power = s:getSystemPower("maneuver"), coolant = s:getSystemCoolant("maneuver"),',
-  '      health = s:getSystemHealth("maneuver"), heat = s:getSystemHeat("maneuver") }',
-  "  }",
-  "})",
-].join("\n");
+export const MAX_PLAYER_SHIP_SCAN = 32;
+
+export function buildObservationLua(callsign: string): string {
+  if (!isValidCallsign(callsign)) {
+    throw new TypeError(`invalid callsign: ${String(callsign)}`);
+  }
+  const wanted = luaString(callsign);
+  const scan = String(MAX_PLAYER_SHIP_SCAN);
+  return [
+    "local s = nil",
+    "local other = nil",
+    `for i = 1, ${scan} do`,
+    "  local candidate = getPlayerShip(i)",
+    "  if candidate ~= nil then",
+    `    if candidate:getCallSign() == ${wanted} then`,
+    "      s = candidate",
+    "    elseif other == nil then",
+    "      other = candidate",
+    "    end",
+    "  end",
+    "end",
+    'if s == nil then return toJSON({error="SHIP_NOT_FOUND"}) end',
+    "local x, y = s:getPosition()",
+    "local vx, vy = s:getVelocity()",
+    "local rot = s:getRotation()",
+    "local heading = s:getHeading()",
+    "local speed = math.sqrt(vx * vx + vy * vy)",
+    "local impulse_level = 0.0",
+    "local impulse_request = 0.0",
+    "local drive = s.components.impulse_engine",
+    "if drive ~= nil then",
+    "  impulse_level = drive.actual",
+    "  impulse_request = drive.request",
+    "end",
+    "local hull_level = 0.0",
+    "local hull_max = 0.0",
+    "local hull = s.components.hull",
+    "if hull ~= nil then",
+    "  hull_level = hull.current",
+    "  hull_max = hull.max",
+    "end",
+    "local shield_level = 0.0",
+    "local shield_max = 0.0",
+    "local shields = s.components.shields",
+    "if shields ~= nil then",
+    "  for idx = 0, shields.entries.length - 1 do",
+    "    shield_level = shield_level + shields.entries[idx].level",
+    "    shield_max = shield_max + shields.entries[idx].max",
+    "  end",
+    "end",
+    "local other_callsign = false",
+    "local other_faction = false",
+    "local other_x = 0.0",
+    "local other_y = 0.0",
+    "local other_distance = 0.0",
+    "if other ~= nil then",
+    "  other_callsign = other:getCallSign()",
+    "  local other_faction_name = other:getFaction()",
+    "  if other_faction_name ~= nil then other_faction = other_faction_name end",
+    "  local ox, oy = other:getPosition()",
+    "  other_x = ox",
+    "  other_y = oy",
+    "  other_distance = math.sqrt((ox - x) * (ox - x) + (oy - y) * (oy - y))",
+    "end",
+    "return toJSON({",
+    "  callsign = s:getCallSign(),",
+    "  faction = s:getFaction(),",
+    "  x = x,",
+    "  y = y,",
+    "  rotation = rot,",
+    "  heading = heading,",
+    "  velocity_x = vx,",
+    "  velocity_y = vy,",
+    "  speed = speed,",
+    "  impulse_level = impulse_level,",
+    "  impulse_request = impulse_request,",
+    "  energy_level = s:getEnergyLevel(),",
+    "  energy_max = s:getEnergyLevelMax(),",
+    "  hull_level = hull_level,",
+    "  hull_max = hull_max,",
+    "  shield_level = shield_level,",
+    "  shield_max = shield_max,",
+    "  other_callsign = other_callsign,",
+    "  other_faction = other_faction,",
+    "  other_x = other_x,",
+    "  other_y = other_y,",
+    "  other_distance = other_distance,",
+    "  systems = {",
+    '    reactor = { power = s:getSystemPower("reactor"), coolant = s:getSystemCoolant("reactor"),',
+    '      health = s:getSystemHealth("reactor"), heat = s:getSystemHeat("reactor") },',
+    '    impulse = { power = s:getSystemPower("impulse"), coolant = s:getSystemCoolant("impulse"),',
+    '      health = s:getSystemHealth("impulse"), heat = s:getSystemHeat("impulse") },',
+    '    maneuver = { power = s:getSystemPower("maneuver"), coolant = s:getSystemCoolant("maneuver"),',
+    '      health = s:getSystemHealth("maneuver"), heat = s:getSystemHeat("maneuver") }',
+    "  }",
+    "})",
+  ].join("\n");
+}
+
+export function observationLua(callsign: string): string {
+  return buildObservationLua(callsign);
+}
 
 export const OBSERVED_SYSTEMS = ["reactor", "impulse", "maneuver"] as const;
 export type ObservedSystem = (typeof OBSERVED_SYSTEMS)[number];
@@ -49,8 +114,16 @@ export type SystemReading = {
   heat: number;
 };
 
+export type OtherShip = {
+  callsign: string;
+  faction: string | null;
+  position: { x: number; y: number };
+  distance: number;
+};
+
 export type Observation = {
   callsign: string;
+  faction: string | null;
   position: { x: number; y: number };
   rotation: number;
   heading: number;
@@ -60,6 +133,11 @@ export type Observation = {
   impulse_request: number;
   energy_level: number;
   energy_max: number;
+  hull_level: number;
+  hull_max: number;
+  shield_level: number;
+  shield_max: number;
+  other_ship: OtherShip | null;
   systems: Record<ObservedSystem, SystemReading>;
 };
 
@@ -69,6 +147,7 @@ export type ObservationErrorCode =
   | "LUA_ERROR"
   | "INVALID_JSON"
   | "NO_PLAYER_SHIP"
+  | "SHIP_NOT_FOUND"
   | "INVALID_FIELD";
 
 export type ObservationResult =
@@ -134,12 +213,17 @@ export function parseObservationBody(body: string): ObservationResult {
   }
   const record = parsed as Record<string, unknown>;
   if (typeof record["error"] === "string") {
+    const engineError = String(record["error"]);
     const code: ObservationErrorCode =
-      record["error"] === "NO_PLAYER_SHIP" ? "NO_PLAYER_SHIP" : "LUA_ERROR";
+      engineError === "NO_PLAYER_SHIP"
+        ? "NO_PLAYER_SHIP"
+        : engineError === "SHIP_NOT_FOUND"
+          ? "SHIP_NOT_FOUND"
+          : "LUA_ERROR";
     return {
       ok: false,
       code,
-      detail: `engine reported ${String(record["error"])}`,
+      detail: `engine reported ${engineError}`,
       raw: body,
     };
   }
@@ -165,6 +249,10 @@ export function parseObservationBody(body: string): ObservationResult {
     "impulse_request",
     "energy_level",
     "energy_max",
+    "hull_level",
+    "hull_max",
+    "shield_level",
+    "shield_max",
   ] as const;
   for (const field of required) {
     const value = finite(record[field]);
@@ -214,8 +302,13 @@ export function parseObservationBody(body: string): ObservationResult {
     }
     systems[name] = reading;
   }
+  const otherRaw = readOtherShip(record, body);
+  if (typeof otherRaw !== "object" || otherRaw === null) {
+    return otherRaw;
+  }
   const observation: Observation = {
     callsign,
+    faction: typeof record["faction"] === "string" ? record["faction"] : null,
     position: { x: numbers["x"], y: numbers["y"] },
     rotation: numbers["rotation"],
     heading,
@@ -225,9 +318,49 @@ export function parseObservationBody(body: string): ObservationResult {
     impulse_request: numbers["impulse_request"],
     energy_level: numbers["energy_level"],
     energy_max: numbers["energy_max"],
+    hull_level: numbers["hull_level"],
+    hull_max: numbers["hull_max"],
+    shield_level: numbers["shield_level"],
+    shield_max: numbers["shield_max"],
+    other_ship: otherRaw,
     systems,
   };
   return { ok: true, observation, raw: body };
+}
+
+function readOtherShip(
+  record: Record<string, unknown>,
+  raw: string,
+): OtherShip | ObservationResult {
+  const callsign = record["other_callsign"];
+  if (callsign === undefined || callsign === null || callsign === false) {
+    return null;
+  }
+  if (typeof callsign !== "string" || callsign.length === 0) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "other_callsign must be a non-empty string when present",
+      raw,
+    };
+  }
+  const x = finite(record["other_x"]);
+  const y = finite(record["other_y"]);
+  const distance = finite(record["other_distance"]);
+  if (x === null || y === null || distance === null) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "other_x, other_y and other_distance must be finite numbers",
+      raw,
+    };
+  }
+  return {
+    callsign,
+    faction: typeof record["other_faction"] === "string" ? record["other_faction"] : null,
+    position: { x, y },
+    distance,
+  };
 }
 
 export function parseObservationResult(exec: EeExecResult): ObservationResult {
@@ -309,6 +442,10 @@ export function parseObservationObject(value: unknown): ObservationResult {
     "impulse_request",
     "energy_level",
     "energy_max",
+    "hull_level",
+    "hull_max",
+    "shield_level",
+    "shield_max",
   ] as const) {
     const value2 = finite(record[field]);
     if (value2 === null) {
@@ -366,11 +503,23 @@ export function parseObservationObject(value: unknown): ObservationResult {
     }
     systems[name] = reading;
   }
+  const other = readOtherShipObject(record["other_ship"], raw);
+  if (typeof other !== "object" || other === null) {
+    if (typeof other === "string") {
+      return {
+        ok: false,
+        code: "INVALID_FIELD",
+        detail: other,
+        raw,
+      };
+    }
+  }
   return {
     ok: true,
     raw,
     observation: {
       callsign,
+      faction: typeof record["faction"] === "string" ? record["faction"] : null,
       position: { x, y },
       rotation: numbers["rotation"],
       heading: normalizeDegrees(numbers["heading"]),
@@ -380,13 +529,47 @@ export function parseObservationObject(value: unknown): ObservationResult {
       impulse_request: numbers["impulse_request"],
       energy_level: numbers["energy_level"],
       energy_max: numbers["energy_max"],
+      hull_level: numbers["hull_level"],
+      hull_max: numbers["hull_max"],
+      shield_level: numbers["shield_level"],
+      shield_max: numbers["shield_max"],
+      other_ship: other,
       systems,
     },
   };
 }
 
-export async function observeOnce(port: EeExecLuaPort): Promise<ObservationTick> {
-  const exec = await port.call(OBSERVATION_LUA);
+function readOtherShipObject(value: unknown, raw: string): OtherShip | null | string {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return "other_ship must be an object when present";
+  }
+  const record = value as Record<string, unknown>;
+  const callsign = record["callsign"];
+  const x = finite(record["x"]);
+  const y = finite(record["y"]);
+  const distance = finite(record["distance"]);
+  if (typeof callsign !== "string" || callsign.length === 0) {
+    return "other_ship.callsign must be a non-empty string";
+  }
+  if (x === null || y === null || distance === null) {
+    return "other_ship x, y and distance must be finite numbers";
+  }
+  return {
+    callsign,
+    faction: typeof record["faction"] === "string" ? record["faction"] : null,
+    position: { x, y },
+    distance,
+  };
+}
+
+export async function observeOnce(
+  port: EeExecLuaPort,
+  callsign: string,
+): Promise<ObservationTick> {
+  const exec = await port.call(buildObservationLua(callsign));
   return { at: Date.now(), result: parseObservationResult(exec) };
 }
 

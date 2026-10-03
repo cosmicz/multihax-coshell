@@ -1,6 +1,7 @@
 import {
   isRecord,
   isSeatRole,
+  isValidCallsign,
   type RefusalCode,
   type SeatRole,
 } from "./types.ts";
@@ -29,6 +30,7 @@ export const INTENT_NAMES = [
   "impulse_fraction",
   "system_power_request",
   "system_coolant_request",
+  "target_ship",
 ] as const;
 export type IntentName = (typeof INTENT_NAMES)[number];
 
@@ -43,6 +45,7 @@ export const INTENT_ROLE: Readonly<Record<IntentName, SeatRole>> = {
   impulse_fraction: "helms",
   system_power_request: "engineering",
   system_coolant_request: "engineering",
+  target_ship: "weapons",
 };
 
 export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
@@ -54,6 +57,7 @@ export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
     "damagecontrol",
     "singlepilot",
   ],
+  weapons: ["weapons", "singlepilot"],
 };
 
 export type ValidatedIntent =
@@ -68,7 +72,8 @@ export type ValidatedIntent =
       intent: "system_coolant_request";
       system: SystemName;
       level: number;
-    };
+    }
+  | { intent: "target_ship"; callsign: string };
 
 export type Classification =
   | { ok: true; intent: IntentName }
@@ -146,6 +151,13 @@ export function validateIntentArgs(
         return { ok: false, code: "OUT_OF_RANGE" };
       }
       return { ok: true, intent: { intent, system, level } };
+    }
+    case "target_ship": {
+      const callsign = args.callsign;
+      if (!isValidCallsign(callsign)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, callsign } };
     }
   }
 }

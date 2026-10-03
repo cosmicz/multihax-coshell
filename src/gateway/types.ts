@@ -1,5 +1,11 @@
-export const SEAT_ROLES = ["helms", "engineering"] as const;
+export const SEAT_ROLES = ["helms", "engineering", "weapons"] as const;
 export type SeatRole = (typeof SEAT_ROLES)[number];
+
+export const CALLSIGN_PATTERN = /^[A-Za-z0-9 _'-]{1,40}$/;
+
+export function isValidCallsign(value: unknown): value is string {
+  return typeof value === "string" && CALLSIGN_PATTERN.test(value);
+}
 
 export const SEAT_MODES = ["HUMAN", "AGENT", "PAUSED"] as const;
 export type SeatMode = (typeof SEAT_MODES)[number];
