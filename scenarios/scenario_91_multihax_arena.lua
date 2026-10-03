@@ -21,8 +21,8 @@ function init()
 
     Nebula():setPosition(9000, 10000)
 
-    gallipoli = PlayerSpaceship():setFaction("Human Navy"):setTemplate("Atlantis"):setPosition(7000, 10000):setCallSign("HNS Gallipoli"):setScannedByFaction("Kraylor", false)
-    crusader = PlayerSpaceship():setFaction("Kraylor"):setTemplate("Atlantis"):setPosition(11000, 10000):setCallSign("Crusader Naa'Tvek"):setScannedByFaction("Human Navy", false)
+    gallipoli = PlayerSpaceship():setFaction("Human Navy"):setTemplate("Atlantis"):setPosition(4000, 17000):setCallSign("HNS Gallipoli"):setScannedByFaction("Kraylor", false)
+    crusader = PlayerSpaceship():setFaction("Kraylor"):setTemplate("Atlantis"):setPosition(14000, 17000):setCallSign("Crusader Naa'Tvek"):setScannedByFaction("Human Navy", false)
 end
 
 function update(delta)
