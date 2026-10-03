@@ -14,10 +14,9 @@ function init()
     planet:setPlanetAtmosphereColor(0.2, 0.2, 1.0)
     planet:setAxialRotationTime(400)
 
-    moon = Planet():setPosition(9000, -7500):setPlanetRadius(300):setDistanceFromMovementPlane(-150):setCallSign("Vesta")
+    moon = Planet():setPosition(9000, 17000):setPlanetRadius(600):setDistanceFromMovementPlane(-150):setCallSign("Vesta")
     moon:setPlanetSurfaceTexture("planets/moon-1.png")
     moon:setAxialRotationTime(80)
-    moon:setOrbit(planet, 300)
 
     Nebula():setPosition(9000, 10000)
 
