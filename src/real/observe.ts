@@ -57,7 +57,7 @@ export function buildObservationLua(callsign: string): string {
     "  local ex, ey = other:getPosition()",
     "  local separation = math.sqrt((ex - ox) * (ex - ox) + (ey - oy) * (ey - oy))",
     "  local visible = separation <= long_range",
-    "  if visible and s:isRadarBlockedFrom({x=ox, y=oy}, other, short_range) then visible = false end",
+    "  if visible and s:isRadarBlockedFrom({ox, oy}, other, short_range) then visible = false end",
     "  if visible then",
     "    other_callsign = other:getCallSign()",
     "    local other_faction_name = other:getFaction()",

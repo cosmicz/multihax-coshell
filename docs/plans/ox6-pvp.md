@@ -24,7 +24,7 @@ All engine names are verified against
 - [x] 9. `set_shields {active}` → `s:commandSetShields(active)`
 - [x] 10. `set_beam_frequency {frequency 0..20}` → `s:commandSetBeamFrequency(frequency)`
 - [x] 11. Observation weapons fields: missile stock per type, tube count and per-tube load type, beam and shield frequency, enemy shield frequency
-- [x] 12. Engine-backed visibility: an enemy player ship is reported only when `distance <= s:getLongRangeRadarRange()` and `not s:isRadarBlockedFrom({x=ox, y=oy}, enemy, s:getShortRangeRadarRange())`; otherwise `other_ship` is nil and no enemy-derived field is emitted. The same predicate runs inside the `target_ship` and `fire_tube` templates and refuses with `NOT_VISIBLE`, which the gateway maps to refusal code `NOT_VISIBLE`
+- [x] 12. Engine-backed visibility: an enemy player ship is reported only when `distance <= s:getLongRangeRadarRange()` and `not s:isRadarBlockedFrom({ox, oy}, enemy, s:getShortRangeRadarRange())` (positional `{ox, oy}` table, as in the native source example at `src/script.cpp:1738` — not `{x=…, y=…}`); otherwise `other_ship` is nil and no enemy-derived field is emitted. The same predicate runs inside the `target_ship` and `fire_tube` templates and refuses with `NOT_VISIBLE`, which the gateway maps to refusal code `NOT_VISIBLE`
 
 ## Verified engine surface
 
@@ -48,7 +48,7 @@ All engine names are verified against
 | `Entity:getBeamFrequency()` | beam frequency index, `components.beam_weapons.frequency`, 0 without beams | `spaceship.lua` `function Entity:getBeamFrequency() if self.components.beam_weapons then return self.components.beam_weapons.frequency end return 0 end` |
 | `Entity:getShieldsFrequency()` | shield frequency index, readable on any entity, 0 without shields; also used for the enemy ship | `spaceship.lua` `function Entity:getShieldsFrequency() if self.components.shields then return self.components.shields.frequency end return 0 end` |
 | `Entity:getLongRangeRadarRange()` / `Entity:getShortRangeRadarRange()` | own radar ranges, 50000 / 5000 defaults | `playerspaceship.lua:894` and `playerspaceship.lua:901` (live-confirmed by arc-g26g) |
-| `Entity:isRadarBlockedFrom(from_position, other, short_range)` | true when the engine blocks the contact; the visibility predicate | `src/script.cpp:1738` (live-confirmed by arc-g26g); not in the three entity Lua files at the pinned commit |
+| `Entity:isRadarBlockedFrom(from_position, other, short_range)` | true when the engine blocks the contact; the visibility predicate. `from_position` is a **positional** `{x, y}` table | `src/script.cpp:1738` (live-confirmed by arc-g26g); not in the three entity Lua files at the pinned commit |
 | `Entity:commandSetTarget(target)` | command | `scripts/api/entity/playerspaceship.lua`, C++ `luaCommandSetTarget` in `src/script.cpp` (writes `Target::entity`) |
 | `Entity:commandLoadTube(tube_nr, missile_type)` | weapons command | `playerspaceship.lua` `function Entity:commandLoadTube(tube_nr, missile_type) commandLoadTube(self, tube_nr, missile_type) …`, doc example `ship:commandLoadTube(0, "HVLI")` |
 | `Entity:commandFireTubeAtTarget(index, target)` | weapons command | `playerspaceship.lua` `function Entity:commandFireTubeAtTarget(index, target) commandFireTubeAtTarget(self, index, target) …`, doc example `ship:commandFireTubeAtTarget(0, enemy)` |
