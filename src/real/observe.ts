@@ -363,7 +363,7 @@ export function parseObservationBody(body: string): ObservationResult {
     systems[name] = reading;
   }
   const otherRaw = readOtherShip(record, body);
-  if (typeof otherRaw !== "object" || otherRaw === null) {
+  if (otherRaw !== null && "ok" in otherRaw) {
     return otherRaw;
   }
   const observation: Observation = {
@@ -434,7 +434,7 @@ function readStringIndexSeries(value: unknown): (string | null)[] {
 function readOtherShip(
   record: Record<string, unknown>,
   raw: string,
-): OtherShip | ObservationResult {
+): OtherShip | null | ObservationResult {
   const callsign = record["other_callsign"];
   if (callsign === undefined || callsign === null || callsign === false) {
     return null;
