@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { INTENT_NAMES } from "../gateway/intents.ts";
 import { isRecord, type ExecResponse } from "../gateway/types.ts";
-import { observationFailure, parseObservationBody } from "./observe.ts";
+import { observationFailure, parseObservationObject } from "./observe.ts";
 import type { ObservationResult } from "./observe.ts";
 
 export const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
@@ -473,8 +473,8 @@ export class VmApiPort {
         detail: response.detail,
       };
     }
-    const result = parseObservationBody(JSON.stringify(response.json["observation"]));
-    return { at: response.at, result, detail: result.ok ? "" : response.detail };
+    const result = parseObservationObject(response.json["observation"]);
+    return { at: response.at, result, detail: result.ok ? "" : result.detail };
   }
 
   async command(request: VmCommandRequest): Promise<VmCommandOutcome> {

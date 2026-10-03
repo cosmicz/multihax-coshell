@@ -251,6 +251,140 @@ export function parseObservationResult(exec: EeExecResult): ObservationResult {
   return parseObservationBody(exec.body);
 }
 
+function rawOf(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function nestedNumber(
+  container: unknown,
+  key: string,
+  label: string,
+  raw: string,
+): number | ObservationResult {
+  if (typeof container !== "object" || container === null || Array.isArray(container)) {
+    return { ok: false, code: "INVALID_FIELD", detail: `${label} must be an object`, raw };
+  }
+  const value = finite((container as Record<string, unknown>)[key]);
+  if (value === null) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: `${label}.${key} must be a finite number`,
+      raw,
+    };
+  }
+  return value;
+}
+
+export function parseObservationObject(value: unknown): ObservationResult {
+  const raw = rawOf(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "observation must be a json object",
+      raw,
+    };
+  }
+  const record = value as Record<string, unknown>;
+  const callsign = record["callsign"];
+  if (typeof callsign !== "string" || callsign.length === 0) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "callsign must be a non-empty string",
+      raw,
+    };
+  }
+  const numbers: Record<string, number> = {};
+  for (const field of [
+    "rotation",
+    "heading",
+    "speed",
+    "impulse_level",
+    "impulse_request",
+    "energy_level",
+    "energy_max",
+  ] as const) {
+    const value2 = finite(record[field]);
+    if (value2 === null) {
+      return {
+        ok: false,
+        code: "INVALID_FIELD",
+        detail: `${field} must be a finite number`,
+        raw,
+      };
+    }
+    numbers[field] = value2;
+  }
+  const x = nestedNumber(record["position"], "x", "position", raw);
+  if (typeof x !== "number") {
+    return x;
+  }
+  const y = nestedNumber(record["position"], "y", "position", raw);
+  if (typeof y !== "number") {
+    return y;
+  }
+  const vx = nestedNumber(record["velocity"], "x", "velocity", raw);
+  if (typeof vx !== "number") {
+    return vx;
+  }
+  const vy = nestedNumber(record["velocity"], "y", "velocity", raw);
+  if (typeof vy !== "number") {
+    return vy;
+  }
+  if (numbers["heading"] < -360 || numbers["heading"] > 720) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: `heading ${String(numbers["heading"])} is not an angle in degrees`,
+      raw,
+    };
+  }
+  const systemsRaw = record["systems"];
+  if (
+    typeof systemsRaw !== "object" ||
+    systemsRaw === null ||
+    Array.isArray(systemsRaw)
+  ) {
+    return {
+      ok: false,
+      code: "INVALID_FIELD",
+      detail: "systems must be an object",
+      raw,
+    };
+  }
+  const systems = {} as Record<ObservedSystem, SystemReading>;
+  for (const name of OBSERVED_SYSTEMS) {
+    const reading = readSystem((systemsRaw as Record<string, unknown>)[name], name);
+    if (typeof reading === "string") {
+      return { ok: false, code: "INVALID_FIELD", detail: reading, raw };
+    }
+    systems[name] = reading;
+  }
+  return {
+    ok: true,
+    raw,
+    observation: {
+      callsign,
+      position: { x, y },
+      rotation: numbers["rotation"],
+      heading: normalizeDegrees(numbers["heading"]),
+      velocity: { x: vx, y: vy },
+      speed: numbers["speed"],
+      impulse_level: numbers["impulse_level"],
+      impulse_request: numbers["impulse_request"],
+      energy_level: numbers["energy_level"],
+      energy_max: numbers["energy_max"],
+      systems,
+    },
+  };
+}
+
 export async function observeOnce(port: EeExecLuaPort): Promise<ObservationTick> {
   const exec = await port.call(OBSERVATION_LUA);
   return { at: Date.now(), result: parseObservationResult(exec) };
