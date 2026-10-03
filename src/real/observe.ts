@@ -73,6 +73,12 @@ export function buildObservationLua(callsign: string): string {
     "for idx = 0, tube_count - 1 do",
     "  tube_loads[idx] = s:getWeaponTubeLoadType(idx)",
     "end",
+    "local beams = {}",
+    "for idx = 0, 15 do",
+    "  local range = s:getBeamWeaponRange(idx) or 0",
+    "  if range <= 0 then break end",
+    "  beams[#beams + 1] = { range = range, arc = s:getBeamWeaponArc(idx) or 0, direction = s:getBeamWeaponDirection(idx) or 0 }",
+    "end",
     "return toJSON({",
     "  callsign = s:getCallSign(),",
     "  faction = s:getFaction(),",
@@ -98,6 +104,7 @@ export function buildObservationLua(callsign: string): string {
     "  beam_frequency = s:getBeamFrequency(),",
     "  tube_count = tube_count,",
     "  tube_loads = tube_loads,",
+    "  beams = beams,",
     "  stock_homing = s:getWeaponStorage(\"Homing\"),",
     "  stock_homing_max = s:getWeaponStorageMax(\"Homing\"),",
     "  stock_nuke = s:getWeaponStorage(\"Nuke\"),",
@@ -120,7 +127,15 @@ export function buildObservationLua(callsign: string): string {
     '    impulse = { power = s:getSystemPower("impulse"), coolant = s:getSystemCoolant("impulse"),',
     '      health = s:getSystemHealth("impulse"), heat = s:getSystemHeat("impulse") },',
     '    maneuver = { power = s:getSystemPower("maneuver"), coolant = s:getSystemCoolant("maneuver"),',
-    '      health = s:getSystemHealth("maneuver"), heat = s:getSystemHeat("maneuver") }',
+    '      health = s:getSystemHealth("maneuver"), heat = s:getSystemHeat("maneuver") },',
+    '    beamweapons = { power = s:getSystemPower("beamweapons") or 0, coolant = s:getSystemCoolant("beamweapons") or 0,',
+    '      health = s:getSystemHealth("beamweapons") or 0, heat = s:getSystemHeat("beamweapons") or 0 },',
+    '    missilesystem = { power = s:getSystemPower("missilesystem") or 0, coolant = s:getSystemCoolant("missilesystem") or 0,',
+    '      health = s:getSystemHealth("missilesystem") or 0, heat = s:getSystemHeat("missilesystem") or 0 },',
+    '    frontshield = { power = s:getSystemPower("frontshield") or 0, coolant = s:getSystemCoolant("frontshield") or 0,',
+    '      health = s:getSystemHealth("frontshield") or 0, heat = s:getSystemHeat("frontshield") or 0 },',
+    '    rearshield = { power = s:getSystemPower("rearshield") or 0, coolant = s:getSystemCoolant("rearshield") or 0,',
+    '      health = s:getSystemHealth("rearshield") or 0, heat = s:getSystemHeat("rearshield") or 0 }',
     "  }",
     "})",
   ].join("\n");
@@ -130,7 +145,15 @@ export function observationLua(callsign: string): string {
   return buildObservationLua(callsign);
 }
 
-export const OBSERVED_SYSTEMS = ["reactor", "impulse", "maneuver"] as const;
+export const OBSERVED_SYSTEMS = [
+  "reactor",
+  "impulse",
+  "maneuver",
+  "beamweapons",
+  "missilesystem",
+  "frontshield",
+  "rearshield",
+] as const;
 export type ObservedSystem = (typeof OBSERVED_SYSTEMS)[number];
 
 export type SystemReading = {
@@ -178,6 +201,7 @@ export type Observation = {
   beam_frequency: number;
   tube_count: number;
   tube_loads: (string | null)[];
+  beams: { range: number; arc: number; direction: number }[];
   missiles: Record<MissileSlot, MissileStock>;
   other_ship: OtherShip | null;
   systems: Record<ObservedSystem, SystemReading>;
@@ -389,6 +413,7 @@ export function parseObservationBody(body: string): ObservationResult {
     beam_frequency: numbers["beam_frequency"],
     tube_count: numbers["tube_count"],
     tube_loads: readStringIndexSeries(record["tube_loads"]),
+    beams: readBeams(record["beams"]),
     missiles,
     other_ship: otherRaw,
     systems,
@@ -429,6 +454,24 @@ function readStringIndexSeries(value: unknown): (string | null)[] {
     out.push(typeof entry === "string" ? entry : null);
   }
   return out;
+}
+
+function readBeams(value: unknown): { range: number; arc: number; direction: number }[] {
+  const list = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null
+      ? Object.values(value as Record<string, unknown>)
+      : [];
+  const beams: { range: number; arc: number; direction: number }[] = [];
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const range = finite(record["range"]);
+    const arc = finite(record["arc"]);
+    const direction = finite(record["direction"]);
+    if (range !== null && arc !== null && direction !== null) beams.push({ range, arc, direction });
+  }
+  return beams;
 }
 
 function readOtherShip(
@@ -673,6 +716,7 @@ export function parseObservationObject(value: unknown): ObservationResult {
       beam_frequency: numbers["beam_frequency"],
       tube_count: numbers["tube_count"],
       tube_loads: readStringArray(record["tube_loads"]),
+      beams: readBeams(record["beams"]),
       missiles,
       other_ship: other,
       systems,
