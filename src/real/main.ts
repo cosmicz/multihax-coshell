@@ -129,7 +129,20 @@ export type DriveState = {
   external: Record<VmCommandRole, ExternalRoleState>;
   externalLogs: Record<VmCommandRole, RoleDecisionLog>;
   externalLimiters: Record<VmCommandRole, RateLimiter>;
+  crewChannel: CrewNote[];
 };
+
+export type CrewNote = {
+  at: string;
+  role: VmCommandRole;
+  agent_label: string;
+  text: string;
+};
+
+export const CREW_NOTE_MAX_LENGTH = 280;
+export const CREW_NOTE_WINDOW_MS = 60000;
+export const CREW_NOTE_WINDOW_MAX = 6;
+export const CREW_CHANNEL_LIMIT = 40;
 
 function numEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -323,6 +336,7 @@ export function statePayload(state: DriveState): Record<string, unknown> {
       [ENGINEERING_ACTOR_ID]: agentPayload(state, state.agents.engineering),
     },
     external_intents: externalTotals(state),
+    crew_channel: state.crewChannel,
     log: state.log,
   };
 }
@@ -352,6 +366,7 @@ const PAGE_STYLES = [
   ".refused, .failed { color: #ff9d9d; }",
   ".timeout, .skipped, .partial, .rejected { color: #ffd479; }",
   "#commands-wrap { max-height: 28rem; overflow: auto; }",
+  "#crew-wrap { max-height: 18rem; overflow: auto; }",
   "#commands-body td { vertical-align: top; word-break: break-word; }",
 ].join("\n");
 
@@ -364,6 +379,7 @@ const PAGE_SCRIPT = [
   "var ownersBody = document.getElementById('owners-body');",
   "var labelEl = document.getElementById('controller-label');",
   "var commandsBody = document.getElementById('commands-body');",
+  "var crewBody = document.getElementById('crew-body');",
   "function cell(node, value, cls) {",
   "  var td = document.createElement('td');",
   "  td.textContent = value === null || value === undefined ? '-' : String(value);",
@@ -486,10 +502,29 @@ const PAGE_SCRIPT = [
   "  });",
   "  if (rows.length === 0) { var empty = document.createElement('tr'); cell(empty, 'no commands yet'); commandsBody.appendChild(empty); }",
   "}",
+  "function renderCrewChannel(state) {",
+  "  var notes = (state.crew_channel || []).slice().reverse();",
+  "  crewBody.textContent = '';",
+  "  if (notes.length === 0) {",
+  "    var none = document.createElement('tr');",
+  "    cell(none, 'no crew notes yet');",
+  "    crewBody.appendChild(none);",
+  "    return;",
+  "  }",
+  "  notes.forEach(function (note) {",
+  "    var tr = document.createElement('tr');",
+  "    cell(tr, String(note.at).slice(11, 19), 'at');",
+  "    cell(tr, note.role);",
+  "    cell(tr, note.agent_label);",
+  "    cell(tr, note.text);",
+  "    crewBody.appendChild(tr);",
+  "  });",
+  "}",
   "function render(state) {",
   "  renderTelemetry(state.observation);",
   "  renderAgents(state);",
   "  renderCommands(state);",
+  "  renderCrewChannel(state);",
   "  renderLog(state.log || []);",
   "}",
   "async function poll() {",
@@ -535,6 +570,10 @@ export function renderSpectatorPage(state: DriveState): string {
     '<table id="telemetry"><tbody></tbody></table>',
     "<table><thead><tr><th>system</th><th>power</th><th>coolant</th><th>health</th><th>heat</th></tr></thead>",
     '<tbody id="systems-body"></tbody></table>',
+    "</section>",
+    '<section aria-labelledby="crew-heading"><h2 id="crew-heading">Crew channel (notes between this ship\'s roles, newest first)</h2>',
+    '<div id="crew-wrap"><table><thead><tr><th>time UTC</th><th>role</th><th>agent</th><th>text</th></tr></thead>',
+    '<tbody id="crew-body"></tbody></table></div>',
     "</section>",
     '<section aria-labelledby="commands-heading"><h2 id="commands-heading">Crew command log (newest first; ACCEPTED = API receipt, not proof of game effect; REFUSED = not executed)</h2>',
     '<div id="commands-wrap"><table><thead><tr><th>time UTC</th><th>ship</th><th>role</th><th>agent</th><th>intent</th><th>args</th><th>status</th><th>receipt</th></tr></thead>',
@@ -760,6 +799,85 @@ export function createSpectatorServer(state: DriveState): Server {
     }
     if (method === "GET" && pathname === "/state") {
       sendJson(response, 200, statePayload(state));
+      return;
+    }
+    if (pathname === "/api/crew-note") {
+      if (method !== "POST") {
+        sendJson(response, 405, {
+          ok: false,
+          error: "METHOD_NOT_ALLOWED",
+          detail: "use POST",
+        });
+        return;
+      }
+      void readJsonBody(request).then((body) => {
+        if (!body.ok) {
+          sendJson(response, body.status, { ok: false, error: body.error, detail: body.detail });
+          return;
+        }
+        const value = body.value;
+        if (Object.keys(value).some((key) => isLuaFieldKey(key.toLowerCase()))) {
+          sendJson(response, 400, {
+            ok: false,
+            error: "RAW_LUA_REFUSED",
+            detail: "this endpoint carries plain text notes only, never lua",
+          });
+          return;
+        }
+        const role = value["role"];
+        if (!isVmCommandRole(role)) {
+          sendJson(response, 400, {
+            ok: false,
+            error: "INVALID_ROLE",
+            detail: "role must be helms, engineering or weapons",
+          });
+          return;
+        }
+        const label = normalizeAgentLabel(value["agent_label"]);
+        if (!label.ok) {
+          sendJson(response, 400, {
+            ok: false,
+            error: "INVALID_AGENT_LABEL",
+            detail: label.detail,
+          });
+          return;
+        }
+        const text = value["text"];
+        const trimmed = typeof text === "string" ? text.trim() : "";
+        if (trimmed.length < 1 || trimmed.length > CREW_NOTE_MAX_LENGTH) {
+          sendJson(response, 400, {
+            ok: false,
+            error: "INVALID_TEXT",
+            detail: `text must be 1 to ${String(CREW_NOTE_MAX_LENGTH)} characters`,
+          });
+          return;
+        }
+        const now = Date.now();
+        const recent = state.crewChannel.filter(
+          (note) =>
+            note.role === role && now - Date.parse(note.at) < CREW_NOTE_WINDOW_MS,
+        );
+        if (recent.length >= CREW_NOTE_WINDOW_MAX) {
+          sendJson(response, 429, {
+            ok: false,
+            error: "RATE_LIMITED",
+            detail: `at most ${String(CREW_NOTE_WINDOW_MAX)} crew notes per ${String(
+              CREW_NOTE_WINDOW_MS,
+            )}ms per role`,
+          });
+          return;
+        }
+        state.crewChannel.push({
+          at: new Date(now).toISOString(),
+          role,
+          agent_label: label.label ?? "",
+          text: trimmed,
+        });
+        while (state.crewChannel.length > CREW_CHANNEL_LIMIT) {
+          state.crewChannel.shift();
+        }
+        sendJson(response, 200, { ok: true });
+      });
       return;
     }
     if (pathname === "/api/intent") {
@@ -1036,6 +1154,7 @@ export async function runDrive(options: DriveOptions): Promise<{
       engineering: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
       weapons: new RateLimiter(EXTERNAL_INTENTS_PER_MINUTE),
     },
+    crewChannel: [],
   };
   logLine({
     at: new Date().toISOString(),
