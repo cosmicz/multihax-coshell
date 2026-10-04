@@ -12,8 +12,6 @@ export const SYSTEM_ALLOWLIST = [
   "missilesystem",
   "maneuver",
   "impulse",
-  "warp",
-  "jumpdrive",
   "frontshield",
   "rearshield",
 ] as const;

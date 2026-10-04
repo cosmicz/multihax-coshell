@@ -164,11 +164,7 @@ export function buildObservationLua(callsign: string): string {
     '    frontshield = { power = s:getSystemPower("frontshield") or 0, coolant = s:getSystemCoolant("frontshield") or 0,',
     '      health = s:getSystemHealth("frontshield") or 0, heat = s:getSystemHeat("frontshield") or 0 },',
     '    rearshield = { power = s:getSystemPower("rearshield") or 0, coolant = s:getSystemCoolant("rearshield") or 0,',
-    '      health = s:getSystemHealth("rearshield") or 0, heat = s:getSystemHeat("rearshield") or 0 },',
-    '    warp = { power = s:getSystemPower("warp") or 0, coolant = s:getSystemCoolant("warp") or 0,',
-    '      health = s:getSystemHealth("warp") or 0, heat = s:getSystemHeat("warp") or 0 },',
-    '    jumpdrive = { power = s:getSystemPower("jumpdrive") or 0, coolant = s:getSystemCoolant("jumpdrive") or 0,',
-    '      health = s:getSystemHealth("jumpdrive") or 0, heat = s:getSystemHeat("jumpdrive") or 0 }',
+    '      health = s:getSystemHealth("rearshield") or 0, heat = s:getSystemHeat("rearshield") or 0 }',
     "  }",
     "})",
   ].join("\n");
@@ -186,8 +182,6 @@ export const OBSERVED_SYSTEMS = [
   "missilesystem",
   "frontshield",
   "rearshield",
-  "warp",
-  "jumpdrive",
 ] as const;
 export type ObservedSystem = (typeof OBSERVED_SYSTEMS)[number];
 
