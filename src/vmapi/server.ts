@@ -536,6 +536,11 @@ const INTENT_EXAMPLES: ReadonlyArray<{
     role: "weapons",
     args: { tube: 0, heading_degrees: 90 },
   },
+  {
+    intent: "assign_repair_crew",
+    role: "engineering",
+    args: { crew: 1, system: "reactor" },
+  },
 ];
 
 export function printScripts(callsign: string, enemyCallsign: string): string {

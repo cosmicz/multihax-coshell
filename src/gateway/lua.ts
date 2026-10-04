@@ -129,6 +129,30 @@ function commandLine(intent: ValidatedIntent): string {
       return `commandSetBeamSystemTarget(s, ${luaString(intent.system)})`;
     case "fire_tube_heading":
       return `commandFireTube(s, ${formatTubeIndex(intent.tube)}, ${formatNumber(intent.target_rotation_degrees, 2)})`;
+    case "assign_repair_crew":
+      return [
+        `local room = s:getInternalRoomForSystem(${luaString(intent.system)})`,
+        'if room == nil then return toJSON({refused="NO_ROOM"}) end',
+        "local crew = s:getRepairCrew()",
+        `if crew[${formatTubeIndex(intent.crew)}] == nil then return toJSON({refused="NO_CREW"}) end`,
+        "local coords = s:getCoordinatesForInternalRoom(room)",
+        'if coords == nil or #coords == 0 then return toJSON({refused="NO_ROOM"}) end',
+        "local taken = {}",
+        "for i, other in ipairs(crew) do",
+        `  if i ~= ${formatTubeIndex(intent.crew)} then`,
+        "    local tp = other.components.internal_crew.target_position",
+        "    taken[tostring(tp[1]) .. \",\" .. tostring(tp[2])] = true",
+        "  end",
+        "end",
+        "for _, xy in ipairs(coords) do",
+        "  local key = tostring(xy[1]) .. \",\" .. tostring(xy[2])",
+        "  if not taken[key] then",
+        `    s:moveRepairCrewToPosition(${formatTubeIndex(intent.crew)}, {xy[1], xy[2]})`,
+        "    return toJSON({ok=true})",
+        "  end",
+        "end",
+        'return toJSON({refused="ROOM_FULL"})',
+      ].join("\n");
     case "set_beam_frequency":
       return `s:commandSetBeamFrequency(${formatTubeIndex(intent.frequency)})`;
   }

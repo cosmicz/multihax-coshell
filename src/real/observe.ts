@@ -79,6 +79,34 @@ export function buildObservationLua(callsign: string): string {
     "  if range <= 0 then break end",
     "  beams[#beams + 1] = { range = range, arc = s:getBeamWeaponArc(idx) or 0, direction = s:getBeamWeaponDirection(idx) or 0 }",
     "end",
+    "local readiness = {}",
+    "local readiness_ok = pcall(function()",
+    "  local tubes = s.components.missile_tubes",
+    "  local tube_info = {}",
+    "  if tubes then",
+    "    for i = 1, #tubes do",
+    "      local t = tubes[i]",
+    "      local allowed = {}",
+    "      for _, name in ipairs({\"homing\", \"nuke\", \"mine\", \"emp\", \"hvli\"}) do",
+    "        if t[\"allow_\" .. name] then allowed[#allowed + 1] = name end",
+    "      end",
+    "      tube_info[#tube_info + 1] = { index = i - 1, direction = t.direction, load_time = t.load_time, loaded = t.type_loaded, allowed = allowed }",
+    "    end",
+    "  end",
+    "  readiness.tubes = tube_info",
+    "  local crew = s:getRepairCrew()",
+    "  readiness.repair_crew_count = #crew",
+    "  local ir = s.components.internal_rooms",
+    "  if ir then readiness.auto_repair = ir.auto_repair_enabled end",
+    "  local sh = s.components.shields",
+    "  if sh then readiness.shields_active = sh.active; readiness.shield_calibration_delay = sh.calibration_delay end",
+    "  local cm = s.components.combat_maneuvering_thrusters",
+    "  if cm then readiness.combat_charge = cm.charge end",
+    "  local states = {}",
+    "  if tubes then for i = 1, #tubes do states[#states + 1] = tostring(tubes[i].state) end end",
+    "  readiness.tube_states = states",
+    "end)",
+    "readiness.complete = readiness_ok",
     "return toJSON({",
     "  callsign = s:getCallSign(),",
     "  faction = s:getFaction(),",
@@ -105,6 +133,7 @@ export function buildObservationLua(callsign: string): string {
     "  tube_count = tube_count,",
     "  tube_loads = tube_loads,",
     "  beams = beams,",
+    "  readiness = readiness,",
     "  stock_homing = s:getWeaponStorage(\"Homing\"),",
     "  stock_homing_max = s:getWeaponStorageMax(\"Homing\"),",
     "  stock_nuke = s:getWeaponStorage(\"Nuke\"),",
@@ -203,6 +232,7 @@ export type Observation = {
   tube_loads: (string | null)[];
   beams: { range: number; arc: number; direction: number }[];
   missiles: Record<MissileSlot, MissileStock>;
+  readiness: Record<string, unknown>;
   other_ship: OtherShip | null;
   systems: Record<ObservedSystem, SystemReading>;
 };
@@ -414,6 +444,7 @@ export function parseObservationBody(body: string): ObservationResult {
     tube_count: numbers["tube_count"],
     tube_loads: readStringIndexSeries(record["tube_loads"]),
     beams: readBeams(record["beams"]),
+    readiness: readReadiness(record["readiness"]),
     missiles,
     other_ship: otherRaw,
     systems,
@@ -454,6 +485,58 @@ function readStringIndexSeries(value: unknown): (string | null)[] {
     out.push(typeof entry === "string" ? entry : null);
   }
   return out;
+}
+
+const READINESS_MAX_STRING = 40;
+const READINESS_MAX_ITEMS = 16;
+const READINESS_MAX_DEPTH = 4;
+
+function readinessValue(value: unknown, depth: number): unknown {
+  if (depth > READINESS_MAX_DEPTH) {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === "string") {
+    return value.length <= READINESS_MAX_STRING ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    const list: unknown[] = [];
+    for (const entry of value.slice(0, READINESS_MAX_ITEMS)) {
+      const item = readinessValue(entry, depth + 1);
+      if (item !== undefined) {
+        list.push(item);
+      }
+    }
+    return list;
+  }
+  if (typeof value === "object" && value !== null) {
+    const record: Record<string, unknown> = {};
+    const entries = Object.entries(value as Record<string, unknown>).slice(
+      0,
+      READINESS_MAX_ITEMS,
+    );
+    for (const [key, entry] of entries) {
+      const item = readinessValue(entry, depth + 1);
+      if (item !== undefined) {
+        record[key] = item;
+      }
+    }
+    return record;
+  }
+  return undefined;
+}
+
+export function readReadiness(value: unknown): Record<string, unknown> {
+  const result = readinessValue(value, 0);
+  if (typeof result === "object" && result !== null && !Array.isArray(result)) {
+    return result as Record<string, unknown>;
+  }
+  return {};
 }
 
 function readBeams(value: unknown): { range: number; arc: number; direction: number }[] {
@@ -717,6 +800,7 @@ export function parseObservationObject(value: unknown): ObservationResult {
       tube_count: numbers["tube_count"],
       tube_loads: readStringArray(record["tube_loads"]),
       beams: readBeams(record["beams"]),
+      readiness: readReadiness(record["readiness"]),
       missiles,
       other_ship: other,
       systems,

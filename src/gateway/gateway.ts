@@ -365,6 +365,22 @@ export class RoleScopedGateway {
         "the engine reports the target is outside radar range or blocked",
       );
     }
+    if (
+      parsed.refused === "NO_ROOM" ||
+      parsed.refused === "NO_CREW" ||
+      parsed.refused === "ROOM_FULL"
+    ) {
+      const code = parsed.refused;
+      return this.refuse(
+        requestId,
+        code,
+        code === "NO_ROOM"
+          ? "the ship has no internal room for that system"
+          : code === "NO_CREW"
+            ? "there is no repair crew at that index"
+            : "every coordinate in that room is already taken",
+      );
+    }
     if (typeof parsed.error === "string") {
       return this.failed(
         requestId,

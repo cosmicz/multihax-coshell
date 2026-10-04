@@ -35,6 +35,8 @@ export function isMissileType(value: unknown): value is MissileType {
 }
 
 export const MISSILE_TUBE_MAX = 15;
+export const REPAIR_CREW_MIN = 1;
+export const REPAIR_CREW_MAX = 8;
 export const BEAM_FREQUENCY_MIN = 0;
 export const BEAM_FREQUENCY_MAX = 20;
 
@@ -55,6 +57,7 @@ export const INTENT_NAMES = [
   "set_shield_frequency",
   "set_beam_system_target",
   "fire_tube_heading",
+  "assign_repair_crew",
 ] as const;
 export type IntentName = (typeof INTENT_NAMES)[number];
 
@@ -81,6 +84,7 @@ export const INTENT_ROLE: Readonly<Record<IntentName, SeatRole>> = {
   set_shield_frequency: "weapons",
   set_beam_system_target: "weapons",
   fire_tube_heading: "weapons",
+  assign_repair_crew: "engineering",
 };
 
 export const STATION_COVERAGE: Readonly<Record<SeatRole, readonly string[]>> = {
@@ -119,7 +123,8 @@ export type ValidatedIntent =
   | { intent: "unload_tube"; tube: number }
   | { intent: "set_shield_frequency"; frequency: number }
   | { intent: "set_beam_system_target"; system: SystemName }
-  | { intent: "fire_tube_heading"; tube: number; target_rotation_degrees: number };
+  | { intent: "fire_tube_heading"; tube: number; target_rotation_degrees: number }
+  | { intent: "assign_repair_crew"; crew: number; system: SystemName };
 
 export type Classification =
   | { ok: true; intent: IntentName }
@@ -301,6 +306,21 @@ export function validateIntentArgs(
         ok: true,
         intent: { intent, tube, target_rotation_degrees: heading - 90 },
       };
+    }
+    case "assign_repair_crew": {
+      const crew = args.crew;
+      const system = args.system;
+      if (
+        !Number.isInteger(crew) ||
+        (crew as number) < REPAIR_CREW_MIN ||
+        (crew as number) > REPAIR_CREW_MAX
+      ) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      if (!isSystemName(system)) {
+        return { ok: false, code: "OUT_OF_RANGE" };
+      }
+      return { ok: true, intent: { intent, crew: crew as number, system } };
     }
     case "set_beam_frequency": {
       const frequency = args.frequency;

@@ -22,6 +22,9 @@ export const REFUSAL_CODES = [
   "DUPLICATE_MISMATCH",
   "OCCUPIED",
   "NOT_VISIBLE",
+  "NO_ROOM",
+  "NO_CREW",
+  "ROOM_FULL",
 ] as const;
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 
