@@ -540,6 +540,32 @@ const PAGE_SCRIPT = [
   "setInterval(poll, 1000);",
 ].join("\n");
 
+const NATIVE_VIEW_QUERY =
+  "vnc.html?autoconnect=true&resize=scale&view_only=true&path=websockify";
+const NATIVE_VIEWS: ReadonlyArray<{ team: string; label: string; url: string }> = [
+  {
+    team: "navy",
+    label: "Navy native 3D view (HNS Gallipoli)",
+    url: `https://multihax-view-20261003.style.dev/${NATIVE_VIEW_QUERY}`,
+  },
+  {
+    team: "kraylor",
+    label: "Kraylor native 3D view (Crusader Naa'Tvek)",
+    url: `https://multihax-view-kraylor-20261003.style.dev/${NATIVE_VIEW_QUERY}`,
+  },
+];
+
+function nativeViewLinks(team: string): string {
+  const ordered = [...NATIVE_VIEWS].sort(
+    (a, b) => Number(b.team === team) - Number(a.team === team),
+  );
+  const links = ordered.map(
+    (view) =>
+      `<a href="${view.url}" target="_blank" rel="noopener">${view.label}</a>`,
+  );
+  return `<p class="notice">${links.join(" · ")}</p>`;
+}
+
 export function renderSpectatorPage(state: DriveState): string {
   return [
     "<!doctype html>",
@@ -554,7 +580,7 @@ export function renderSpectatorPage(state: DriveState): string {
     "</head>",
     "<body>",
     "<h1>Agent-only EmptyEpsilon demo</h1>",
-    '<p class="notice"><a href="https://multihax-view-20261003.style.dev/vnc.html?autoconnect=true&resize=scale&view_only=true&path=websockify" target="_blank" rel="noopener">Open native 3D game view</a></p>',
+    nativeViewLinks(state.options.team),
     '<p class="sub">This page shows telemetry and agent decisions; the link above shows the live native EmptyEpsilon view.</p>',
     `<p class="label" id="controller-label">${topLevelControllerLabel(state)} · team: ${state.options.team}</p>`,
     `<p class="notice" role="status">${TAGLINE}</p>`,
